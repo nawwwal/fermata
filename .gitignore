@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Chrome extension packaging
+*.crx
+*.pem
+*.zip
+
+# Secrets / local env
+.env
+.env.*
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo

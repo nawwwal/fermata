@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Tempo Lens",
+  "version": "0.1.0",
+  "description": "A video player for live web pages. Slow, pause, scrub, and step motion on any site, then record it into a frame-perfect storyboard.",
+  "permissions": ["storage", "unlimitedStorage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["page.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": { "default_title": "Tempo Lens — toggle HUD" },
+  "web_accessible_resources": [
+    { "resources": ["storyboard.html"], "matches": ["<all_urls>"] }
+  ]
+}

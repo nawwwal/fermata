@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tempo Lens — Storyboard</title>
+<style>
+  :root {
+    --ink: #16140f; --paper: #1c1a16; --line: #36322a;
+    --amber: #ffb000; --text: #e8e3d8; --dim: #8b8472;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--ink); color: var(--text); min-height: 100vh;
+    font: 13px/1.5 ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+    padding: 36px clamp(20px, 5vw, 64px);
+  }
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 8px; }
+  h1 { font-size: 13px; letter-spacing: .2em; color: var(--amber); font-weight: 700; }
+  .src { color: var(--dim); overflow: hidden; text-overflow: ellipsis; max-width: 48ch; white-space: nowrap; }
+  .actions { margin-left: auto; display: flex; gap: 8px; }
+  button {
+    background: none; border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text); font: inherit; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--amber); color: var(--amber); }
+  .strip-meta { color: var(--dim); font-size: 11px; padding: 10px 0 26px;
+    display: flex; gap: 24px; }
+  .strip-meta b { color: var(--text); font-weight: 400; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 22px; }
+  figure { background: var(--paper); border: 1px solid var(--line); border-radius: 6px;
+    overflow: hidden; }
+  figure img { display: block; width: 100%; height: auto; }
+  figcaption { display: flex; justify-content: space-between; padding: 8px 11px;
+    border-top: 1px solid var(--line); font-size: 11px; color: var(--dim);
+    font-variant-numeric: tabular-nums; }
+  figcaption .t { color: var(--amber); }
+  .empty { color: var(--dim); padding: 60px 0; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>TEMPO LENS / STORYBOARD</h1>
+    <span class="src" id="src"></span>
+    <div class="actions">
+      <button id="sheet">Download contact sheet</button>
+      <button id="all">Download frames</button>
+    </div>
+  </header>
+  <div class="strip-meta" id="meta"></div>
+  <div class="grid" id="grid"><div class="empty">No recording found. Record an interaction from the HUD first.</div></div>
+  <script src="storyboard.js"></script>
+</body>
+</html>
