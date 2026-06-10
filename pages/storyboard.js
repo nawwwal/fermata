@@ -1,4 +1,4 @@
-// Tempo Lens — storyboard renderer.
+// Fermata — storyboard renderer.
 
 const fmt = ms => {
   const s = Math.max(0, ms) / 1000;
@@ -7,9 +7,9 @@ const fmt = ms => {
 
 let data = null;
 
-chrome.storage.local.get('tempoFrames').then(({ tempoFrames }) => {
-  if (!tempoFrames || !tempoFrames.frames || !tempoFrames.frames.length) return;
-  data = tempoFrames;
+chrome.storage.local.get('fermataFrames').then(({ fermataFrames }) => {
+  if (!fermataFrames || !fermataFrames.frames || !fermataFrames.frames.length) return;
+  data = fermataFrames;
   const { frames, meta } = data;
 
   document.getElementById('src').textContent = meta.url;
@@ -38,7 +38,7 @@ document.getElementById('all').addEventListener('click', () => {
   data.frames.forEach((f, i) => {
     const a = document.createElement('a');
     a.href = f.url;
-    a.download = `tempo-frame-${String(i + 1).padStart(2, '0')}.png`;
+    a.download = `fermata-frame-${String(i + 1).padStart(2, '0')}.png`;
     a.click();
   });
 });
@@ -64,7 +64,7 @@ document.getElementById('sheet').addEventListener('click', async () => {
 
   ctx.fillStyle = '#ffb000';
   ctx.font = '700 16px ui-monospace, Menlo, monospace';
-  ctx.fillText('TEMPO LENS / STORYBOARD', pad, 34);
+  ctx.fillText('FERMATA / STORYBOARD', pad, 34);
   ctx.fillStyle = '#8b8472';
   ctx.font = '12px ui-monospace, Menlo, monospace';
   const title = (data.meta.url || '').slice(0, 90);
@@ -86,6 +86,6 @@ document.getElementById('sheet').addEventListener('click', async () => {
 
   const a = document.createElement('a');
   a.href = c.toDataURL('image/png');
-  a.download = 'tempo-storyboard.png';
+  a.download = 'fermata-storyboard.png';
   a.click();
 });

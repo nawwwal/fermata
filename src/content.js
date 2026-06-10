@@ -1,4 +1,4 @@
-// Tempo Lens — HUD + recorder (ISOLATED world).
+// Fermata — HUD + recorder (ISOLATED world).
 // Talks to the MAIN-world engine over postMessage, to the service worker for
 // screenshots. Recording is stop-motion: pause the virtual clock, advance it
 // in fixed steps, capture each settled frame — frame-perfect regardless of
@@ -6,11 +6,11 @@
 
 (() => {
   'use strict';
-  if (window.__tempoLensHud) return;
-  window.__tempoLensHud = true;
+  if (window.__fermataHud) return;
+  window.__fermataHud = true;
 
-  const NS = 'tempo-lens';
-  const SCOPE_ATTR = 'data-tempo-scope';
+  const NS = 'fermata';
+  const SCOPE_ATTR = 'data-fermata-scope';
   let host = null, ui = {}, engineState = { rate: 1, paused: false, vnow: 0 };
   let timeline = { count: 0, endMs: 0 };
   let recording = false;
@@ -27,7 +27,7 @@
   });
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.type === 'tempo-toggle') toggleHud();
+    if (msg && msg.type === 'fermata-toggle') toggleHud();
   });
 
   // ------------------------------------------------------------------- HUD
@@ -89,7 +89,7 @@
 </style>
 <div class="panel">
   <div class="bar" id="drag">
-    <span class="dot" id="dot"></span><span class="name">TEMPO LENS</span>
+    <span class="dot" id="dot"></span><span class="name">FERMATA</span>
     <span class="tc" id="tc">00:00.000</span>
     <button class="x" id="close" title="Close">✕</button>
   </div>
@@ -277,7 +277,7 @@
   const settle = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 40))));
 
   async function capture(attempt = 0) {
-    const res = await chrome.runtime.sendMessage({ type: 'tempo-capture' });
+    const res = await chrome.runtime.sendMessage({ type: 'fermata-capture' });
     if (res && res.ok) return res.url;
     if (attempt < 6) {              // quota backoff (~2 captures/sec allowed)
       await new Promise(r => setTimeout(r, 650));
@@ -318,7 +318,7 @@
         await new Promise(r => setTimeout(r, 620)); // respect capture quota
       }
       await chrome.storage.local.set({
-        tempoFrames: {
+        fermataFrames: {
           frames,
           meta: {
             title: document.title, url: location.href, mode,
@@ -327,7 +327,7 @@
           }
         }
       });
-      chrome.runtime.sendMessage({ type: 'tempo-storyboard' });
+      chrome.runtime.sendMessage({ type: 'fermata-storyboard' });
     } catch (e) {
       ui.tlmeta.innerHTML = '<em>Recording failed:</em> ' + e.message;
     } finally {

@@ -1,4 +1,4 @@
-// Tempo Lens — page engine (MAIN world, document_start).
+// Fermata — page engine (MAIN world, document_start).
 // Owns two time domains:
 //   1. The imperative clock: performance.now / Date.now / rAF timestamps / timer
 //      delays are forged so JS-driven motion (rAF loops, physics, GSAP-core)
@@ -10,10 +10,10 @@
 
 (() => {
   'use strict';
-  if (window.__tempoLens) return;
-  window.__tempoLens = true;
+  if (window.__fermata) return;
+  window.__fermata = true;
 
-  const NS = 'tempo-lens';
+  const NS = 'fermata';
   const realPerfNow = performance.now.bind(performance);
   const realDateNow = Date.now.bind(Date);
   const realRAF = window.requestAnimationFrame.bind(window);
@@ -58,7 +58,7 @@
   };
 
   // ----------------------------------------------------- declarative domain
-  const SCOPE_ATTR = 'data-tempo-scope';
+  const SCOPE_ATTR = 'data-fermata-scope';
 
   function scopedAnimations() {
     let anims;
