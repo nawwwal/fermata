@@ -5,50 +5,145 @@
 <title>Fermata — Storyboard</title>
 <style>
   :root {
-    --ink: #16140f; --paper: #1c1a16; --line: #36322a;
-    --amber: #ffb000; --text: #e8e3d8; --dim: #8b8472;
+    --ink: #100f0b; --paper: #1a1812; --line: #36322a; --line2: #262219;
+    --amber: #ffb000; --amber-dim: #b89a4e; --text: #e8e3d8; --dim: #8b8472; --faint: #56503f;
   }
-  * { box-sizing: border-box; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: var(--ink); }
   body {
-    background: var(--ink); color: var(--text); min-height: 100vh;
-    font: 13px/1.5 ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
-    padding: 36px clamp(20px, 5vw, 64px);
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 3px),
+      linear-gradient(178deg, #14120c, var(--ink) 40%);
+    color: var(--text); min-height: 100vh;
+    font: 400 13.5px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    padding: 30px clamp(20px, 4vw, 56px) 60px;
   }
-  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-    border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 8px; }
-  h1 { font-size: 13px; letter-spacing: .2em; color: var(--amber); font-weight: 700; }
-  .src { color: var(--dim); overflow: hidden; text-overflow: ellipsis; max-width: 48ch; white-space: nowrap; }
+  header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+  .glyph { color: var(--amber); display: flex; filter: drop-shadow(0 0 6px rgba(255,176,0,.4)); }
+  h1 { font: italic 400 22px/1 ui-serif, "Iowan Old Style", Palatino, Georgia, serif; color: #ffc94d; letter-spacing: .01em; }
+  h1 span { font: 400 12px/1 -apple-system, "Segoe UI", sans-serif; color: var(--dim); letter-spacing: .14em; margin-left: 6px; vertical-align: 2px; }
+  .src { color: var(--dim); overflow: hidden; text-overflow: ellipsis; max-width: 44ch;
+    white-space: nowrap; font-size: 11px; }
   .actions { margin-left: auto; display: flex; gap: 8px; }
   button {
-    background: none; border: 1px solid var(--line); border-radius: 6px;
-    color: var(--text); font: inherit; padding: 6px 12px; cursor: pointer;
+    background: #1d1a14; border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text); font: inherit; font-size: 11px; padding: 7px 13px; cursor: pointer;
   }
   button:hover { border-color: var(--amber); color: var(--amber); }
-  .strip-meta { color: var(--dim); font-size: 11px; padding: 10px 0 26px;
-    display: flex; gap: 24px; }
-  .strip-meta b { color: var(--text); font-weight: 400; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 22px; }
-  figure { background: var(--paper); border: 1px solid var(--line); border-radius: 6px;
-    overflow: hidden; }
-  figure img { display: block; width: 100%; height: auto; }
-  figcaption { display: flex; justify-content: space-between; padding: 8px 11px;
-    border-top: 1px solid var(--line); font-size: 11px; color: var(--dim);
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--amber); color: #16140f; border-color: var(--amber); font-weight: 700; }
+  button.primary:hover { color: #16140f; box-shadow: 0 0 16px rgba(255,176,0,.35); }
+
+  .meta { color: var(--dim); font-size: 11px; padding: 12px 0 22px; display: flex;
+    gap: 10px; flex-wrap: wrap; }
+  .meta span { border: 1px solid var(--line2); border-radius: 5px; padding: 3px 9px; }
+  .meta b { color: var(--text); font-weight: 400; }
+
+  /* ------- viewer ------- */
+  .deck { display: none; }
+  .deck.live { display: block; }
+  .stage { position: relative; background: var(--paper); border: 1px solid var(--line);
+    border-radius: 10px; overflow: hidden; display: flex; align-items: center;
+    justify-content: center; min-height: 200px; max-height: 68vh; }
+  .stage img { display: block; max-width: 100%; max-height: 68vh; }
+  .stage .ghost { position: absolute; inset: 0; margin: auto; opacity: 0; pointer-events: none;
+    transition: opacity .15s; }
+  .stage.onion .ghost { opacity: .45; }
+  .stage .badge { position: absolute; top: 10px; left: 12px; color: var(--amber);
+    font-size: 11px; letter-spacing: .12em; background: rgba(16,15,11,.78);
+    border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px;
     font-variant-numeric: tabular-nums; }
-  figcaption .t { color: var(--amber); }
-  .empty { color: var(--dim); padding: 60px 0; }
+
+  .transport { display: flex; align-items: center; gap: 8px; padding: 14px 0 10px; flex-wrap: wrap; }
+  .transport .tc { color: var(--amber); font-size: 17px; font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 12px rgba(255,176,0,.25); min-width: 11ch; }
+  .transport .sep { color: var(--faint); }
+  select { background: #1d1a14; border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text); font: inherit; font-size: 11px; padding: 6px 6px; }
+  button.on { background: #2b2310; border-color: var(--amber); color: var(--amber); }
+  .hint { margin-left: auto; color: var(--faint); font-size: 10px; }
+  .hint b { color: var(--dim); font-weight: 400; }
+
+  /* ------- filmstrip ------- */
+  .filmstrip { display: flex; gap: 8px; overflow-x: auto; padding: 8px 2px 16px;
+    scrollbar-width: thin; }
+  .filmstrip figure { flex: none; width: 132px; cursor: pointer; border: 1px solid var(--line2);
+    border-radius: 6px; overflow: hidden; background: var(--paper); }
+  .filmstrip figure.on { border-color: var(--amber); box-shadow: 0 0 10px rgba(255,176,0,.25); }
+  .filmstrip img { display: block; width: 100%; height: auto; }
+  .filmstrip figcaption { display: flex; justify-content: space-between; font-size: 9px;
+    color: var(--faint); padding: 3px 6px; font-variant-numeric: tabular-nums; }
+  .filmstrip figure.on figcaption { color: var(--amber-dim); }
+  .filmstrip figcaption .t { color: inherit; }
+
+  /* ------- contact grid ------- */
+  .grid-h { font-size: 10px; letter-spacing: .22em; color: var(--faint); padding: 26px 0 14px;
+    border-top: 1px solid var(--line2); margin-top: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
+  .grid figure { background: var(--paper); border: 1px solid var(--line2); border-radius: 6px;
+    overflow: hidden; cursor: pointer; }
+  .grid figure:hover { border-color: var(--line); }
+  .grid img { display: block; width: 100%; height: auto; }
+  .grid figcaption { display: flex; justify-content: space-between; padding: 7px 10px;
+    border-top: 1px solid var(--line2); font-size: 11px; color: var(--dim);
+    font-variant-numeric: tabular-nums; }
+  .grid figcaption .t { color: var(--amber); }
+
+  .empty { color: var(--dim); padding: 70px 0; text-align: center; }
+  .empty .glyph { justify-content: center; margin-bottom: 16px; opacity: .6; }
 </style>
 </head>
 <body>
   <header>
-    <h1>FERMATA / STORYBOARD</h1>
+    <span class="glyph"><svg width="26" height="17" viewBox="0 0 24 15" fill="none">
+      <path d="M2.5 13.5 A 9.5 9.5 0 0 1 21.5 13.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+      <circle cx="12" cy="11.6" r="2" fill="currentColor"/></svg></span>
+    <h1>Fermata <span>STORYBOARD</span></h1>
     <span class="src" id="src"></span>
     <div class="actions">
-      <button id="sheet">Download contact sheet</button>
-      <button id="all">Download frames</button>
+      <button id="webm">Export film (.webm)</button>
+      <button id="all">Save frames</button>
+      <button id="sheet" class="primary">Contact sheet</button>
     </div>
   </header>
-  <div class="strip-meta" id="meta"></div>
-  <div class="grid" id="grid"><div class="empty">No recording found. Record an interaction from the HUD first.</div></div>
+  <div class="meta" id="meta"></div>
+
+  <div class="deck" id="deck">
+    <div class="stage" id="stage">
+      <img class="ghost" id="ghost" alt="">
+      <img id="frame" alt="">
+      <span class="badge" id="badge"></span>
+    </div>
+    <div class="transport">
+      <span class="tc" id="tc">+00:00.000</span>
+      <button id="first" title="First frame">⏮</button>
+      <button id="prev" title="Previous frame (←)">◀</button>
+      <button id="play" title="Play flipbook (space)">▶ Play</button>
+      <button id="next" title="Next frame (→)">▶</button>
+      <button id="last" title="Last frame">⏭</button>
+      <span class="sep">·</span>
+      <select id="fps" title="Flipbook rate">
+        <option value="2">2 fps</option>
+        <option value="6" selected>6 fps</option>
+        <option value="12">12 fps</option>
+        <option value="24">24 fps</option>
+      </select>
+      <button id="onion" title="Ghost the previous frame (O)">Onion skin</button>
+      <span class="hint"><b>←→</b> step · <b>space</b> play · <b>O</b> onion</span>
+    </div>
+    <div class="filmstrip" id="filmstrip"></div>
+    <div class="grid-h">CONTACT SHEET</div>
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <div class="empty" id="empty">
+    <div class="glyph"><svg width="44" height="28" viewBox="0 0 24 15" fill="none">
+      <path d="M2.5 13.5 A 9.5 9.5 0 0 1 21.5 13.5" stroke="#56503f" stroke-width="2.2" stroke-linecap="round"/>
+      <circle cx="12" cy="11.6" r="2" fill="#56503f"/></svg></div>
+    No film yet. Open Fermata on a page (⌥⇧F), freeze a moment (space), and press R to record.
+  </div>
+
   <script src="storyboard.js"></script>
 </body>
 </html>

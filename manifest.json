@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Fermata",
-  "version": "0.1.0",
-  "description": "A video player for live web pages. Slow, pause, scrub, and step motion on any site, then record it into a frame-perfect storyboard.",
+  "version": "0.2.0",
+  "description": "Freeze any website's clock and the live page tilts into 3D. Slow, step, and scrub its motion, fan it into echoes, record a frame-perfect storyboard.",
   "permissions": ["storage", "unlimitedStorage", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "src/background.js" },
@@ -26,6 +26,12 @@
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+F" },
+      "description": "Toggle the Fermata HUD"
+    }
   },
   "action": {
     "default_title": "Fermata — toggle HUD",

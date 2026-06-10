@@ -26,13 +26,17 @@ icon/wordmark, or evaluating whether a proposed feature name fits the brand.
 
 ## What Fermata is
 
-Fermata is a **video player for live web pages** — a Chrome extension that
-lets you slow, pause, scrub, and step motion on any site, then record an
-interaction into a frame-perfect storyboard.
+Fermata makes **frozen time a place**. Freeze a page's clock and the live DOM
+itself tilts into 3D — a slab of frozen glass you can orbit, step in exact
+increments, drag through its motion, and clone into depth-fanned echoes
+(an animation's past behind it, its future ahead, inside the page's own
+space) — then record into a frame-perfect storyboard.
 
 The wedge is not "record the screen faster." It is **own the page's clock** so
 motion becomes inspectable and capturable with stop-motion precision, even when
-Chrome's screenshot API is capped at ~2/sec.
+Chrome's screenshot API is capped at ~2/sec. The 3D presentation is not
+decoration: it is the product's one emotion (authority over time) made visible
+— the page you were using is suddenly an artifact in your hand.
 
 ## Product thesis
 
@@ -72,93 +76,113 @@ Four files, three worlds:
 
 | File | World | Role |
 |------|-------|------|
-| `page.js` | MAIN (`document_start`) | Virtual clock + declarative animation governor |
-| `content.js` | ISOLATED (`document_idle`) | HUD, picker, scrub UI, stop-motion recorder |
-| `background.js` | Service worker | Toggle HUD, `captureVisibleTab`, open storyboard |
-| `storyboard.html` / `storyboard.js` | Extension page | Render frames from `chrome.storage.local` |
+| `page.js` | MAIN (`document_start`) | Virtual clock, timer queue, animation governor, echoes |
+| `content.js` | ISOLATED (`document_idle`) | Capsule, tilt, keyboard, drag-scrub, stop-motion recorder |
+| `background.js` | Service worker | Toggle, badge, `captureVisibleTab`, open storyboard |
+| `storyboard.html` / `storyboard.js` | Extension page | Flipbook viewer + exports from `chrome.storage.local` |
 
 Cross-world bus: `postMessage` with namespace `fermata` (`fermata-hud` ↔
 `fermata-engine`).
 
 Two time domains (keep them in lockstep when stepping):
 
-1. **Imperative clock** — patched `performance.now`, `Date.now`, rAF
-   timestamps, and dilated timer delays for JS-driven motion.
+1. **Imperative clock** — patched `performance.now`, `Date.now`, `new Date()`,
+   rAF timestamps, and a virtual timer queue (pending timers retime on rate
+   change, freeze on hold, fire when stepped across) for JS-driven motion.
 2. **Declarative domain** — `playbackRate` on live `Animation` objects; scrubbing
    seeks `currentTime` on scoped animations.
 
-Scope: picked element gets `data-fermata-scope`; governor and scrub filter to
-animations whose effect target is inside that subtree.
+Exemption rule: everything Fermata creates is exempt from its own time
+authority — elements under `data-fermata-ui` and any `Animation` whose `id`
+starts with `fermata`. Never animate Fermata UI without one of those marks, or
+the governor will freeze Fermata itself.
+
+Echoes: deep clones of a moving element placed inside `body` (so they tilt with
+the page), each replaying the original effect's keyframes via WAAPI, parked at
+staggered `currentTime`s, fanned through `translateZ`.
 
 ## UX principles
 
-1. **HUD stays out of the way** — fixed panel, draggable, dismissible; hidden
-   during capture so it never appears in frames.
-2. **Transport reads like a deck** — rate, pause, step, scrub, record. Labels
-   are short; helper text explains non-obvious limits once.
-3. **Slow first, then scrub** — transitions finish quickly at 1×; users need
-   presets (.05, .1, .25) and copy that nudges them to slow the clock before
-   scanning.
-4. **Status is visible** — timecode, rate, animation count, recording progress
-   bar. Silent failure is unacceptable; surface capture quota errors.
-5. **Storyboard opens automatically** after a successful record. Download paths
-   (contact sheet, all frames) must stay obvious.
+1. **The page is the interface.** Fermata adds one quiet capsule of words at
+   the bottom; everything else happens to the page itself (tilt, echoes,
+   scrub). No panels, no wizards, no settings.
+2. **One key per move, named in plain words** — freeze, step, speed, echo,
+   record, leave. Every capsule hint is also a clickable button, so pointer
+   users are never stranded. Never use jargon like "HUD", "transport", or
+   "scope" in UI copy.
+3. **Entirely keyboard-driven** — space, arrows, E, R, esc while Fermata is
+   active; `⌥⇧F` to enter/leave. Keys are ignored while focus is in an
+   editable field (except esc).
+4. **Announce, don't explain** — tempo changes and freezes show a brief serif
+   word with a plain-language subtitle ("adagio — quarter speed"), then get out
+   of the way.
+5. **Status is visible** — capsule shows tempo word, rate, timecode; the
+   toolbar badge mirrors the tab's clock (`HELD` / rate / nothing at 1×).
+   Silent failure is unacceptable.
+6. **Frames are always clean** — the page flattens and all overlays hide
+   before each capture; storyboard opens automatically after a record.
 
 ## Visual and aesthetic source of truth
 
-The HUD is a **broadcast monitor / timecode deck** — not SaaS minimalism, not
-skeuomorphic toy chrome.
+The feeling is **golden hour in a dark concert hall** — warm, exclusive, calm
+authority. Not SaaS minimalism, not dev-tool chrome, not a dashboard.
 
 Current language:
 
-- Dark warm charcoal panel (`#10100d` family) with subtle border (`#3a352c`)
-- **Amber** (`#ffb000`) for active state, timecode, accents, scope highlight
-- Muted warm grays for labels (`#6e675a`, `#9a937f`)
-- Monospace throughout: `ui-monospace`, SF Mono, Cascadia Mono, Menlo
-- Small caps section headers with letter-spacing (`.h`)
-- Tabular nums for timecode and rate
-- Compact 308px panel; 10–12px type; tight vertical rhythm
+- Warm near-black room (`#0b0906`–`#15110a` radial) behind the tilted page
+- **Amber/gold** (`#ffb000`, highlights `#ffc94d`/`#ffd45e`) for time, accents,
+  the glyph, and the viewport's golden hairline — never purple, ever
+- Editorial **serif** for the display voice — tempo words, toasts, wordmark:
+  `ui-serif, "Iowan Old Style", Palatino, Georgia` — usually italic
+- Clean system **sans** for working text and key hints — **no monospace
+  anywhere**
+- The fermata glyph (arc + dot, inline SVG) is the only logo treatment
+- The capsule is a dark golden glass pill; key hints render as soft `kbd` caps
 
 Material rules:
 
-1. HUD lives in **Shadow DOM** so page CSS cannot leak in or out.
-2. Accent color means *live / active / time* — do not sprinkle amber on
-   everything.
-3. Buttons are flat bordered chips; `.on` = filled amber for primary transport
-   state (pause engaged, record armed).
-4. Scope picker uses amber outline + faint fill on the target element.
-5. Storyboard page should feel like the same instrument: dark, monospace,
-   amber metadata, grid of frames with time offsets.
+1. All overlay UI lives in **Shadow DOM** on a `data-fermata-ui` host so page
+   CSS cannot leak in or out and the governor exempts it.
+2. Amber means *time / held / alive* — do not sprinkle it on everything.
+3. The 3D treatment belongs to the page (body transform + perspective), never
+   to floating menus. No "3D buttons".
+4. Echo ghosts: past is sepia and dimmer with depth; future is brighter with a
+   faint golden glow.
+5. Storyboard page is the same room: dark warm ground, serif wordmark, amber
+   timecodes, sans working text.
 
 Avoid:
 
-- Inter, system-ui-only stacks, or rounded SaaS cards
-- Purple gradients, glassmorphism dashboards, or generic shadcn styling
-- Large modals or multi-step wizards for core transport
+- Monospace type anywhere in product surfaces
+- Purple, gradients-as-decoration, glassmorphism dashboards, shadcn defaults
+- Panels with labeled sections, modals, or multi-step wizards
 - Animations that fight the user's attempt to study motion
 
 ## Interaction rules
 
-1. Toolbar icon toggles HUD; content script may be absent on restricted URLs —
-   fail silently in the service worker, do not spam errors.
+1. Toolbar icon / `⌥⇧F` toggles Fermata; content script may be absent on
+   restricted URLs — fail silently in the service worker, do not spam errors.
 2. **Reload once after install** — user must know the engine injects at
    `document_start`.
-3. Rate slider is **log-scale** (0.02×–2×); presets snap to common dissect rates.
-4. Stepping (`+16 ms`, `+100 ms`) only advances the virtual clock while paused;
-   copy should say it includes JS motion.
-5. Scrub strip disabled until scan finds seekable animations in scope.
-6. Record modes:
-   - **clock** — step forged clock through `span` ms from current position
-   - **timeline** — distribute frames across scanned animation duration
-7. Respect `captureVisibleTab` quota (~2/sec): backoff in capture loop, progress
-   UI during record.
+3. Tempo presets are musical words with plain subtitles; `↑↓` walks them.
+4. `→` steps the forged clock (JS timers fire when crossed); `←` rewinds the
+   seekable domain only — never imply JS rewinds.
+5. Freezing tilts; releasing untilts; recording always flattens first and
+   restores after. Body inline styles are saved and restored exactly.
+6. Drag-to-scrub and click-swallowing apply only while frozen, and never to
+   Fermata's own surfaces.
+7. Record needs zero settings: timeline span when a strip exists, else 800 ms
+   of clock; 12 frames (`shift R` = 24).
+8. Respect `captureVisibleTab` quota (~2/sec): backoff in capture loop, show
+   the recording pill between captures, never during them.
 
 ## Definition of done
 
 A change is done when:
 
 1. Behavior matches README claims (or README is updated if limits change).
-2. HUD still works on a normal https page after reload.
+2. Enter/freeze/leave still work on a normal https page after reload, and
+   leaving restores the site exactly (transform, background, outline).
 3. Clock patch does not regress pass-through cost at 1× / unpaused.
 4. Recording produces a storyboard tab with correct frame count and metadata.
 5. No new permissions without explicit justification.
@@ -166,10 +190,11 @@ A change is done when:
 
 Manual verification checklist:
 
-1. Load unpacked extension → reload a test tab → toggle HUD
-2. Set rate to 0.1×, pause, step +16 ms — timecode advances
-3. Pick element, scan, scrub if animations exist
-4. Record 8–12 frames in clock mode — storyboard opens, contact sheet downloads
+1. Load unpacked extension → reload a test tab → `⌥⇧F`
+2. `↓` to *largo*, `space` to freeze — the page tilts, the clock stops
+3. `→` a few times — timecode advances in exact 16.67 ms steps
+4. Point at something moving, `E` — echoes fan into depth; drag to scrub
+5. `R` — storyboard opens with clean frames; flipbook plays; exports download
 
 ## Guardrails
 
