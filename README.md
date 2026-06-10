@@ -1,60 +1,48 @@
-# Tempo Lens
+# Fermata
 
-A video player for live web pages. Slow, pause, scrub, and step motion on any
-site, then record an interaction into a frame-perfect storyboard.
+*In music, a fermata instructs the performer to hold a note for as long as the conductor decides. Time does not resume until they say so.*
+
+Fermata is a Chrome extension that gives you the same authority over a live web page. Drop the rate to a crawl. Pause mid-interaction. Step forward in exact increments. Decide when time resumes.
+
+The mechanism: Fermata takes ownership of the page's clock — `performance.now`, `Date.now`, rAF timestamps, timer delays — so every kind of motion on the page, JS-driven or declarative, runs at your rate. Not a recording. Not a replay. The page is live; its sense of time is yours.
+
+---
 
 ## Install
 
 1. `chrome://extensions` → enable **Developer mode**
 2. **Load unpacked** → select this folder
-3. On any page, click the Tempo Lens toolbar icon to toggle the HUD
-4. **Reload the tab once after installing** — the clock engine must inject at
-   `document_start`, before the page's own scripts run
+3. Reload the tab once — the clock engine injects at `document_start` and must arrive before the page's own scripts
+4. Click the Fermata toolbar icon to open the HUD
 
-## How it works
+---
 
-Two time domains, two mechanisms:
+## The instrument
 
-- **Imperative motion** (rAF loops, GSAP-core, physics, canvas): the engine
-  forges the page's clock — `performance.now`, `Date.now`, rAF timestamps,
-  timer delays — so JS-driven motion runs at your chosen rate, freezes on
-  pause, and advances in exact 16 ms steps.
-- **Declarative motion** (CSS animations, transitions, WAAPI): a governor
-  pins `playbackRate` on every live `Animation` object; these are also
-  seekable, which is what the scrub strip drives — both directions.
+**Clock rate** — log-scale from 0.02× to 2×. Presets at .05, .1, .25, .5 cover most dissection work. At 0.05× a 200 ms hover transition takes four seconds. That is enough time to see what is actually happening.
 
-**Recording is stop-motion.** Chrome caps screenshots at ~2/sec, far too slow
-for real-time motion — but since the engine owns the clock, the recorder
-pauses virtual time, advances it in fixed increments, and captures each
-settled frame at leisure. Frame-perfect regardless of capture throughput,
-including JS-driven motion.
+**Transport** — pause freezes both JS motion and CSS/WAAPI animations simultaneously. `+16 ms` and `+100 ms` advance the forged clock in exact steps while paused. Step through a keyframe. See the frame your eye keeps missing.
 
-## Workflow
+**Scope** — pick any element; the governor and scrub strip narrow to animations within that subtree. Everything else continues at its own rate.
 
-1. **Dissect live:** drop the rate to 0.05–0.25×, trigger the interaction,
-   watch it unfold. Pause and `+16 ms` step through the critical moment.
-2. **Scope:** *Pick element* → click the component; everything else is ignored.
-3. **Scrub:** trigger the interaction at a slow rate, *Scan animations*, then
-   drag the strip forward/back. (Transitions vanish once finished — slow the
-   clock first so they're alive when you scan.)
-4. **Record:** *clock* mode steps through the next N virtual ms from wherever
-   you are — start it mid-interaction. *timeline* mode scrubs the scanned
-   animations end-to-end. Either way a storyboard tab opens; download the
-   contact sheet or individual frames.
+**Scrub** — scan the scoped animations into a single strip, then drag forward or back. Works on CSS animations, transitions, and WAAPI. Slow the clock before scanning so transitions are still alive when you reach for them.
 
-## Honest limits
+**Record** — stop-motion capture. Chrome caps screenshots at roughly two per second, which is far too slow for real-time motion. Fermata pauses virtual time, advances it in fixed steps, and captures each settled frame at leisure. Frame count and span are yours to set. Two modes:
+- *clock* — steps the forged clock through the next N virtual milliseconds from wherever you are; start mid-interaction
+- *timeline* — distributes frames evenly across the scanned animation strip end-to-end
 
-- **Reverse-scrubbing applies to seekable (CSS/WAAPI) animations only.**
-  JS-driven motion can be slowed, paused, and stepped *forward*, but reverse
-  would mean un-executing arbitrary code. For JS motion, "reverse" exists
-  after recording, as storyboard frames.
-- Timers already pending when you change the rate keep their original
-  real-time fuse; only newly scheduled timers are dilated.
-- Pages that capture `performance.now` into a local variable before the
-  engine patches it (rare, but possible with bundlers) escape the forged
-  clock; their CSS/WAAPI output is still governed.
-- Scroll-linked animations driven by scroll position (not time) don't slow
-  down — their clock is your finger.
-- Video/audio elements and compositor scroll physics are not retimed.
-- Top frame only by design; flip `all_frames` in the manifest if you need
-  iframes (HUD stays in the top frame).
+A storyboard tab opens automatically. Download the contact sheet or individual frames.
+
+---
+
+## What Fermata does not govern
+
+JS-driven motion can be slowed, paused, and stepped forward. It cannot be reverse-scrubbed in live page time — reversing would mean un-executing arbitrary code. For JS motion, reverse exists after recording, in the storyboard.
+
+Timers already scheduled when you change the rate keep their original fuse. Only timers created after the rate change are dilated.
+
+Pages that capture `performance.now` into a local variable before Fermata's patch runs — possible with certain bundler patterns — escape the forged clock. Their CSS/WAAPI output is still governed.
+
+Scroll-linked animations driven by scroll position rather than time are not retimed. Video and audio elements are not retimed. Compositor scroll physics are not retimed.
+
+Fermata operates on the top frame only by design. To extend into iframes, set `all_frames: true` in the manifest; the HUD stays in the top frame regardless.
