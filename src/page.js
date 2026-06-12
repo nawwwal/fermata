@@ -45,31 +45,39 @@
   }
   function setFrozen(p) {
     rebase(); frozen = !!p;
+    if (frozen) buildWindow();
+    else {
+      if (win) histSeek(win.end);   // snap history back to the present before time resumes
+      win = null; liveInf = null;
+      clearScore(); clearTrail();   // body-space annotations die with the freeze
+    }
     governNow(); repump();
   }
-  // Step the virtual clock forward by ms (the precision move while frozen).
-  // Fires any virtual timers that come due and nudges seekable animations so
-  // both time domains stay in lockstep.
+  // Step forward. Inside history this replays the recorded past — no JS
+  // re-runs. At the right edge it advances the live virtual clock: timers
+  // that come due actually fire, and the window's present moves with it.
   function nudge(ms) {
+    if (frozen && win && win.p < win.end - 0.5) { histSeek(win.p + ms); return; }
     rebase(); vBase += ms;
     for (const a of pageAnimations()) {
       try { a.currentTime = Math.max(0, Number(a.currentTime || 0) + ms); } catch (_) {}
     }
     pump();      // run JS timers that the step crossed
     repump();
-    echoSync();
-  }
-  // Move only the seekable (CSS/WAAPI) domain — backwards is possible here,
-  // and only here. JS already executed; we never pretend otherwise.
-  function seekBy(ms) {
-    if (!frozen) setFrozen(true);
-    for (const a of pageAnimations()) {
-      try {
-        a.pause(); frozenByUs.add(a);
-        a.currentTime = Math.min(endOf(a) - 0.01, Math.max(0, Number(a.currentTime || 0) + ms));
-      } catch (_) {}
+    if (win) {
+      win.end = vNow(); win.p = win.end;
+      if (liveInf) for (const li of liveInf) {
+        try { li.ct0 = Number(li.a.currentTime || 0); } catch (_) {}
+      }
     }
     echoSync();
+  }
+  // Move the playhead through held time — backwards is possible here, and
+  // only here. JS already executed; we never pretend otherwise.
+  function seekBy(ms) {
+    if (!frozen) setFrozen(true);
+    if (!win) return;
+    histSeek(win.p + ms);
   }
 
   // --------------------------------------------------------- clock patches
@@ -89,8 +97,12 @@
   window.Date = FermataDate;
 
   // rAF timestamps are forged from the real frame timestamp so every callback
-  // in the same frame sees the same virtual instant.
+  // in the same frame sees the same virtual instant. The counter tells the
+  // overlay whether a JS draw loop is live, so it can be honest that this
+  // kind of motion only steps forward.
+  let rafHits = 0;
   window.requestAnimationFrame = function (cb) {
+    rafHits++;
     return realRAF((ts) => { try { cb(toVirtual(ts)); } catch (e) { console.error(e); } });
   };
 
@@ -201,7 +213,15 @@
     for (const a of pageAnimations()) {
       try {
         if (frozen) {
-          if (a.playState === 'running') { a.pause(); frozenByUs.add(a); }
+          if (a.playState === 'running') {
+            a.pause(); frozenByUs.add(a);
+            // born into frozen time: hold it at its own first frame with the
+            // whole motion ahead, and remember it on the reel
+            if (reelSet && !reelSet.has(a)) {
+              try { a.currentTime = 0; } catch (_) {}
+              reelNote(a);
+            }
+          }
         } else {
           if (a.playbackRate !== rate) a.playbackRate = rate;
           if (frozenByUs.has(a) && a.playState === 'paused') { a.play(); frozenByUs.delete(a); }
@@ -210,37 +230,231 @@
     }
     if ((rate !== 1 || frozen) && !governing) { governing = true; realRAF(governLoop); }
   }
+  // Full scans of every animation are O(n) per call; on animation-heavy pages
+  // doing that every frame is what made the tilt stutter. Every third frame
+  // (~50 ms) still catches newborn animations faster than the eye notices.
+  let governTick = 0;
   function governLoop() {
     if (rate === 1 && !frozen) { governing = false; return; }
-    governNow();
+    if (governTick++ % 3 === 0) governNow();
     realRAF(governLoop);
   }
 
-  // Timeline: aggregate the page's animations into one scrubbable strip.
-  function scanTimeline() {
-    const anims = pageAnimations();
-    let end = 0, t = 0;
-    for (const a of anims) {
-      end = Math.max(end, endOf(a));
-      t = Math.max(t, Number(a.currentTime || 0));
+  // The reel: while Fermata is active, every finite animation the page
+  // performs is remembered — a held reference to a finished animation can
+  // still be sought backward, so the page's recent past stays replayable.
+  // Freeze at any moment and the timeline runs from activation (or the last
+  // 30 s) to now; drag left and the dropdown you opened five seconds ago
+  // replays its entrance. No trap, no timing skill: a DVR for the DOM.
+  const REEL_MAX = 200, REEL_WINDOW = 30000;
+  let reel = [];        // [{ a, born, end }] — born in vclock ms
+  let reelSet = null;
+  let reelOn = false;
+  let enterV = null;
+
+  // The ledger: animations replay the declarative record; the ledger replays
+  // everything else — insertions, removals, class/style/attribute flips,
+  // text. Together they make rewind show what actually happened: menus open
+  // and close again, and JS-drawn motion replays from its own style history.
+  const LOG_MAX = 12000;
+  let mlog = [], domPos = 0, mo = null, replaying = false;
+
+  function oursNode(n) {
+    const el = n && n.nodeType === 1 ? n : n && n.parentElement;
+    return !!(el && el.closest && el.closest(`[${UI_ATTR}]`));
+  }
+  function ledgerStart() {
+    if (mo) return;
+    mlog = []; domPos = 0;
+    mo = new MutationObserver(recs => { if (!replaying) ledgerPush(recs); });
+    mo.observe(document.documentElement, {
+      subtree: true, childList: true,
+      attributes: true, attributeOldValue: true,
+      characterData: true, characterDataOldValue: true,
+    });
+  }
+  function ledgerStop() {
+    if (mo) { try { mo.disconnect(); } catch (_) {} mo = null; }
+    mlog = []; domPos = 0;
+  }
+  function ledgerPush(recs) {
+    const t = vNow();
+    const atHead = domPos === mlog.length;
+    for (const m of recs) {
+      // the tilt owns body/html attributes while Fermata is active
+      if ((m.target === document.body || m.target === document.documentElement) &&
+          m.type !== 'childList') continue;
+      if (oursNode(m.target)) continue;
+      // styles Fermata itself holds on page elements (pinned fixed elements,
+      // tilted top-layer companions) are not page history
+      if (m.type === 'attributes') {
+        if (m.attributeName && m.attributeName.indexOf('data-fermata') === 0) continue;
+        if (m.target.hasAttribute && m.target.hasAttribute('data-fermata-held')) continue;
+      }
+      if (m.type === 'childList') {
+        const add = [...m.addedNodes].filter(n => !oursNode(n));
+        const rem = [...m.removedNodes].filter(n => !(n.nodeType === 1 && n.hasAttribute(UI_ATTR)));
+        if (!add.length && !rem.length) continue;
+        mlog.push({ t, k: 'c', tg: m.target, add, rem, prev: m.previousSibling, next: m.nextSibling });
+      } else if (m.type === 'attributes') {
+        mlog.push({ t, k: 'a', tg: m.target, n: m.attributeName,
+          o: m.oldValue, v: m.target.getAttribute(m.attributeName) });
+      } else {
+        mlog.push({ t, k: 't', tg: m.target, o: m.oldValue, v: m.target.data });
+      }
     }
-    return { count: anims.length, endMs: end, t: Math.min(t, end) };
+    if (mlog.length > LOG_MAX) {
+      const drop = mlog.length - (LOG_MAX - 2000);
+      mlog.splice(0, drop);
+      domPos = Math.max(0, domPos - drop);
+    }
+    if (atHead) domPos = mlog.length;
+  }
+  // park any animations a replayed change just (re)started at the moment in
+  // history they belong to
+  function parkNew(node, P, born) {
+    if (!node || node.nodeType !== 1 || !node.getAnimations) return;
+    let anims = [];
+    try { anims = node.getAnimations({ subtree: true }); } catch (_) { return; }
+    for (const a of anims) {
+      if (reelSet && reelSet.has(a)) continue;
+      try { if (a.playState === 'running') { a.pause(); a.currentTime = Math.max(0, P - born); } } catch (_) {}
+    }
+  }
+  function undoM(e) {
+    try {
+      if (e.k === 'a') { e.o == null ? e.tg.removeAttribute(e.n) : e.tg.setAttribute(e.n, e.o); }
+      else if (e.k === 't') e.tg.data = e.o;
+      else {
+        for (let i = e.add.length - 1; i >= 0; i--) { try { e.add[i].remove(); } catch (_) {} }
+        for (const n of e.rem) {
+          try {
+            if (e.next && e.next.parentNode === e.tg) e.tg.insertBefore(n, e.next);
+            else e.tg.appendChild(n);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+  function redoM(e, P) {
+    try {
+      if (e.k === 'a') {
+        e.v == null ? e.tg.removeAttribute(e.n) : e.tg.setAttribute(e.n, e.v);
+        parkNew(e.tg, P, e.t);
+      } else if (e.k === 't') e.tg.data = e.v;
+      else {
+        for (const n of e.rem) { try { n.remove(); } catch (_) {} }
+        for (const n of e.add) {
+          try {
+            if (e.next && e.next.parentNode === e.tg) e.tg.insertBefore(n, e.next);
+            else if (e.prev && e.prev.parentNode === e.tg) e.tg.insertBefore(n, e.prev.nextSibling);
+            else e.tg.appendChild(n);
+          } catch (_) {}
+        }
+        for (const n of e.add) parkNew(n, P, e.t);
+      }
+    } catch (_) {}
+  }
+  function domSeek(P) {
+    if (!mo) return;
+    replaying = true;
+    try { mo.takeRecords(); } catch (_) {}
+    while (domPos > 0 && mlog[domPos - 1].t > P) undoM(mlog[--domPos]);
+    while (domPos < mlog.length && mlog[domPos].t <= P) redoM(mlog[domPos++], P);
+    try { mo.takeRecords(); } catch (_) {}
+    replaying = false;
   }
 
-  function scrub(frac) {
-    if (!frozen) setFrozen(true);
-    const anims = pageAnimations();
-    let end = 0;
-    for (const a of anims) end = Math.max(end, endOf(a));
-    const t = frac * end;
-    for (const a of anims) {
+  function reelNote(a) {
+    if (replaying) return;
+    if (!reelSet || reelSet.has(a)) return;
+    reelSet.add(a);
+    let tm;
+    try { tm = a.effect.getComputedTiming(); } catch (_) { return; }
+    if (!isFinite(tm.endTime) || !(Number(tm.duration) > 0)) return; // loops scrub by phase instead
+    let ct = 0;
+    try { ct = Number(a.currentTime || 0); } catch (_) {}
+    reel.push({ a, born: vNow() - ct, end: Number(tm.endTime) });
+    if (reel.length > REEL_MAX + 20) reel.splice(0, reel.length - REEL_MAX);
+  }
+  function reelStart() {
+    if (reelOn) return;
+    reelOn = true; reel = []; reelSet = new WeakSet(); enterV = vNow();
+    ledgerStart();
+    const tick = () => {
+      if (!reelOn) return;
+      if (!frozen) for (const a of pageAnimations()) reelNote(a);
+      realRAF(tick);
+    };
+    realRAF(tick);
+  }
+  function reelStop() { reelOn = false; reel = []; reelSet = null; enterV = null; ledgerStop(); }
+
+  // The held timeline: [start, end] in vclock ms, p = the playhead. The
+  // right edge is the present; everything left of it is replayable history.
+  let win = null;
+  let liveInf = null;   // infinite animations at freeze: scrubbed by phase shift
+
+  function buildWindow() {
+    const now = vNow();
+    let start = now;
+    for (const it of reel) start = Math.min(start, it.born);
+    start = Math.max(start, now - REEL_WINDOW, enterV == null ? now : enterV);
+    liveInf = [];
+    for (const a of pageAnimations()) {
+      let tm;
+      try { tm = a.effect.getComputedTiming(); } catch (_) { continue; }
+      if (isFinite(tm.endTime)) continue;
+      let ct = 0;
+      try { ct = Number(a.currentTime || 0); } catch (_) {}
+      liveInf.push({ a, ct0: ct });
+    }
+    win = { start: Math.min(start, now), end: now, p: now };
+  }
+
+  function histSeek(P) {
+    if (!win) return;
+    P = Math.max(win.start, Math.min(win.end, Number(P) || 0));
+    win.p = P;
+    domSeek(P);   // the DOM first — menus exist before their entrances play
+    for (const it of reel) {
       try {
-        a.pause(); frozenByUs.add(a);
-        a.currentTime = Math.min(t, Math.max(0, endOf(a) - 0.01));
+        it.a.pause(); frozenByUs.add(it.a);
+        it.a.currentTime = Math.max(0, Math.min(P - it.born, Math.max(0, it.end - 0.01)));
+      } catch (_) {}
+    }
+    for (const li of liveInf) {
+      try {
+        li.a.pause(); frozenByUs.add(li.a);
+        li.a.currentTime = Math.max(0, li.ct0 + (P - win.end));
       } catch (_) {}
     }
     echoSync();
-    return { t, endMs: end };
+  }
+
+  function scanTimeline() {
+    if (frozen && win) {
+      return { count: reel.length + (liveInf ? liveInf.length : 0),
+               endMs: win.end - win.start, t: win.p - win.start };
+    }
+    const now = vNow();
+    let start = now;
+    for (const it of reel) start = Math.min(start, it.born);
+    start = Math.max(start, now - REEL_WINDOW, enterV == null ? now : enterV);
+    return { count: reel.length, endMs: now - start, t: now - start };
+  }
+
+  function scrubTo(rel) {
+    if (!frozen) setFrozen(true);
+    if (!win) return { t: 0, endMs: 0 };
+    histSeek(win.start + (Number(rel) || 0));
+    return { t: win.p - win.start, endMs: win.end - win.start };
+  }
+  function scrub(frac) {
+    if (!frozen) setFrozen(true);
+    if (!win) return { t: 0, endMs: 0 };
+    histSeek(win.start + (Math.max(0, Math.min(1, frac)) * (win.end - win.start)));
+    return { t: win.p - win.start, endMs: win.end - win.start };
   }
 
   // ------------------------------------------------------------------ echo
@@ -273,10 +487,9 @@
   }
   const nodeAt = (root, path) => path.reduce((n, i) => n && n.childNodes[i], root);
 
-  function buildEcho(x, y) {
-    clearEcho();
-    if (!document.body) return { count: 0 };
-    // climb from the point to the nearest element whose subtree moves
+  // Climb from a point to the nearest element whose subtree moves — shared
+  // by echo, score, and trail.
+  function findMoving(x, y) {
     let el = document.elementFromPoint(x, y);
     const moving = n => {
       try { return n.getAnimations({ subtree: true }).filter(a => !isOurs(a)); }
@@ -284,12 +497,21 @@
     };
     let anims = [];
     while (el && el !== document.body && el !== document.documentElement) {
-      if (el.hasAttribute && el.hasAttribute(UI_ATTR)) return { count: 0 };
+      if (el.hasAttribute && el.hasAttribute(UI_ATTR)) return null;
       anims = moving(el);
       if (anims.length) break;
       el = el.parentElement;
     }
-    if (!el || !anims.length || el === document.body || el === document.documentElement) return { count: 0 };
+    if (!el || !anims.length || el === document.body || el === document.documentElement) return null;
+    return { el, anims, label: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') };
+  }
+
+  function buildEcho(x, y) {
+    clearEcho();
+    if (!document.body) return { count: 0 };
+    const hit = findMoving(x, y);
+    if (!hit) return { count: 0 };
+    const el = hit.el, anims = hit.anims;
 
     if (!frozen) setFrozen(true);
     const r = measureFlat(el);
@@ -369,12 +591,234 @@
     echo = null;
   }
 
+  // ------------------------------------------------------------------ score
+  // Transcribe an element's motion as sheet music, drawn in the page's own
+  // space: each animation is a staff, its easing the melody line, duration
+  // and delay the bar. The code to reproduce it rides along for copying.
+  const SERIF = `ui-serif, 'Iowan Old Style', Palatino, Georgia, serif`;
+  const SANS = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`;
+  let scoreUI = null;
+
+  function easingPath(easing, w, h) {
+    const KW = { linear: [0, 0, 1, 1], ease: [.25, .1, .25, 1], 'ease-in': [.42, 0, 1, 1],
+                 'ease-out': [0, 0, .58, 1], 'ease-in-out': [.42, 0, .58, 1] };
+    const mSteps = /steps\((\d+)/.exec(easing);
+    if (mSteps) {
+      const n = Math.max(1, +mSteps[1]);
+      let d = `M0 ${h}`;
+      for (let i = 1; i <= n; i++) d += ` H${(i / n * w).toFixed(1)} V${(h - i / n * h).toFixed(1)}`;
+      return d;
+    }
+    const mBez = /cubic-bezier\(([^)]+)\)/.exec(easing);
+    let cp = mBez ? mBez[1].split(',').map(Number) : KW[String(easing).trim()];
+    if (!cp || cp.length !== 4 || cp.some(v => !isFinite(v))) cp = KW.linear;
+    const [x1, y1, x2, y2] = cp;
+    let d = `M0 ${h}`;
+    for (let i = 1; i <= 28; i++) {
+      const u = i / 28, v = 1 - u;
+      const bx = 3 * v * v * u * x1 + 3 * v * u * u * x2 + u * u * u;
+      const by = 3 * v * v * u * y1 + 3 * v * u * u * y2 + u * u * u;
+      d += ` L${(bx * w).toFixed(1)} ${(h - by * h).toFixed(1)}`;
+    }
+    return d;
+  }
+
+  function describeAnim(a) {
+    let tm = {}, kf = [];
+    try { tm = a.effect.getComputedTiming() || {}; } catch (_) {}
+    try { kf = a.effect.getKeyframes() || []; } catch (_) {}
+    const skip = { offset: 1, easing: 1, composite: 1, computedOffset: 1 };
+    const props = [...new Set(kf.flatMap(k => Object.keys(k).filter(p => !skip[p])))];
+    return {
+      props: props.length ? props : ['style'],
+      duration: Number(tm.duration) || 0, delay: Number(tm.delay) || 0,
+      easing: tm.easing || 'linear', iterations: tm.iterations,
+      infinite: !isFinite(tm.endTime), direction: tm.direction || 'normal',
+      kf: kf.map(({ composite, computedOffset, ...rest }) => rest),
+    };
+  }
+
+  function codeFor(it) {
+    const opts = [`duration: ${Math.round(it.duration)}`];
+    if (it.delay) opts.push(`delay: ${Math.round(it.delay)}`);
+    if (it.easing && it.easing !== 'linear') opts.push(`easing: '${it.easing}'`);
+    if (it.infinite) opts.push('iterations: Infinity');
+    else if (it.iterations > 1) opts.push(`iterations: ${it.iterations}`);
+    if (it.direction !== 'normal') opts.push(`direction: '${it.direction}'`);
+    opts.push(`fill: 'both'`);
+    return `element.animate(${JSON.stringify(it.kf, null, 2)}, {\n  ${opts.join(',\n  ')}\n});`;
+  }
+
+  const shortEase = (e) => {
+    const m = /cubic-bezier\(([^)]+)\)/.exec(e);
+    if (!m) return e;
+    return 'bezier(' + m[1].split(',').map(v =>
+      (+v).toFixed(2).replace(/\.?0+$/, '').replace(/^(-?)0\./, '$1.') || '0').join(', ') + ')';
+  };
+
+  function buildScore(x, y) {
+    clearScore();
+    if (!document.body) return { count: 0 };
+    const hit = findMoving(x, y);
+    if (!hit) return { count: 0 };
+    if (!frozen) setFrozen(true);
+    const r = measureFlat(hit.el);
+    const items = hit.anims.slice(0, 3).map(describeAnim);
+    const code = items.map(codeFor).join('\n\n');
+    renderScoreCard(r, items, hit.label);
+    return { count: items.length, label: hit.label, code };
+  }
+
+  function renderScoreCard(r, items, label) {
+    const W = 252, CW = 216;
+    const bodyW = Math.max(document.documentElement.scrollWidth, innerWidth);
+    let left = r.left + r.width + 18;
+    if (left + W + 10 > bodyW) left = Math.max(8, r.left - W - 18);
+    const top = Math.max(8, r.top);
+    const wrap = document.createElement('div');
+    wrap.setAttribute(UI_ATTR, '');
+    wrap.style.cssText =
+      `position:absolute;left:${left}px;top:${top}px;width:${W}px;z-index:2147483600;` +
+      `background:rgba(17,13,7,.93);border:1px solid rgba(255,176,0,.35);border-radius:14px;` +
+      `padding:13px 16px 11px;pointer-events:none;` +
+      `box-shadow:0 18px 50px rgba(0,0,0,.5),0 0 40px rgba(255,176,0,.08);` +
+      `font:400 11px/1.45 ${SANS};color:rgba(242,232,213,.8);`;
+    let html =
+      `<div style="font:italic 400 16px/1.2 ${SERIF};color:#ffc94d;margin-bottom:2px;">${label}</div>` +
+      `<div style="font:400 9px/1 ${SANS};letter-spacing:.24em;color:rgba(255,222,150,.45);margin-bottom:10px;">THE SCORE</div>`;
+    for (const it of items) {
+      const staff = [0, 1, 2, 3, 4].map(i =>
+        `<line x1="0" y1="${8 + i * 10}" x2="${CW}" y2="${8 + i * 10}" stroke="rgba(255,176,0,.16)" stroke-width="1"/>`).join('');
+      const d = easingPath(it.easing, CW, 40);
+      html +=
+        `<div style="margin:0 0 10px;">` +
+        `<div style="color:#f2e8d5;font-weight:500;margin-bottom:4px;">${it.props.join(' · ')}</div>` +
+        `<svg width="${CW}" height="56" viewBox="0 0 ${CW} 56" style="display:block;">${staff}` +
+        `<g transform="translate(0,8)">` +
+        `<path d="${d}" fill="none" stroke="#ffc94d" stroke-width="1.8" stroke-linecap="round"/>` +
+        `<circle cx="0" cy="40" r="3" fill="#ffd45e"/><circle cx="${CW}" cy="0" r="3" fill="#ffd45e"/>` +
+        `</g></svg>` +
+        `<div style="color:rgba(255,222,150,.75);font-variant-numeric:tabular-nums;">` +
+        `${Math.round(it.duration)} ms` +
+        (it.delay ? ` · rest ${Math.round(it.delay)} ms` : '') +
+        ` · ${shortEase(it.easing)}` +
+        (it.infinite ? ' · ∞' : (it.iterations > 1 ? ` · ×${it.iterations}` : '')) +
+        `</div></div>`;
+    }
+    html += `<div style="color:rgba(242,232,213,.45);font-size:10px;">shift S copies this as code</div>`;
+    wrap.innerHTML = html;
+    const onRight = left > r.left + r.width;
+    const lx = onRight ? r.left + r.width : left + W;
+    const lw = Math.max(4, Math.abs((onRight ? left : r.left) - lx));
+    const lead = document.createElement('div');
+    lead.setAttribute(UI_ATTR, '');
+    lead.style.cssText =
+      `position:absolute;left:${lx}px;top:${r.top + 16}px;width:${lw}px;height:1px;` +
+      `background:linear-gradient(90deg,rgba(255,176,0,.55),rgba(255,176,0,.1));` +
+      `z-index:2147483600;pointer-events:none;`;
+    document.body.appendChild(wrap);
+    document.body.appendChild(lead);
+    try {
+      const a = wrap.animate(
+        [{ opacity: 0, transform: 'translateY(7px)' }, { opacity: 1, transform: 'translateY(0)' }],
+        { duration: 260, easing: 'cubic-bezier(.23,1,.32,1)' });
+      a.id = `${NS}-score`;
+    } catch (_) {}
+    scoreUI = { wrap, lead };
+  }
+  function clearScore() {
+    if (!scoreUI) return;
+    try { scoreUI.wrap.remove(); scoreUI.lead.remove(); } catch (_) {}
+    scoreUI = null;
+  }
+
+  // ------------------------------------------------------------------ trail
+  // The element's actual trajectory through the strip, drawn in the page:
+  // beads sit at equal *time* intervals, so their spacing is velocity made
+  // visible — bunched is slow, spread is fast, kinks are easing inflections.
+  let trailUI = null;
+  function buildTrail(x, y, n = 48) {
+    clearTrail();
+    if (!document.body) return { count: 0 };
+    const hit = findMoving(x, y);
+    if (!hit) return { count: 0 };
+    if (!frozen) setFrozen(true);
+    if (!win || win.end - win.start < 40) return { count: 0 };
+    const span = win.end - win.start;
+    const p0 = win.p;
+    // sample positions flat, all inside one task — the browser never paints
+    // the flattened page
+    const b = document.body;
+    const keepT = b.style.transform, keepTr = b.style.transition;
+    b.style.transition = 'none'; b.style.transform = 'none';
+    const br = b.getBoundingClientRect();
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const tt = (i / (n - 1)) * span;
+      histSeek(win.start + tt);
+      const rr = hit.el.getBoundingClientRect();
+      pts.push({ x: rr.left + rr.width / 2 - br.left, y: rr.top + rr.height / 2 - br.top, t: tt });
+    }
+    b.style.transform = keepT; b.style.transition = keepTr;
+    histSeek(p0);
+    let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+    for (const p of pts) {
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+    }
+    if (maxX - minX < 6 && maxY - minY < 6) return { count: 0, still: true, label: hit.label };
+    renderTrail(pts);
+    return { count: n, label: hit.label, spanMs: span };
+  }
+
+  function renderTrail(pts) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute(UI_ATTR, '');
+    const w = Math.max(document.documentElement.scrollWidth, innerWidth);
+    const h = Math.max(document.documentElement.scrollHeight, innerHeight);
+    svg.setAttribute('width', w);
+    svg.setAttribute('height', h);
+    svg.style.cssText = 'position:absolute;left:0;top:0;z-index:2147483599;pointer-events:none;overflow:visible;';
+    const d = pts.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+    const n = pts.length;
+    let inner =
+      `<path d="${d}" fill="none" stroke="rgba(255,176,0,.14)" stroke-width="6" stroke-linecap="round"/>` +
+      `<path d="${d}" fill="none" stroke="rgba(255,201,77,.55)" stroke-width="1.5"/>`;
+    pts.forEach((p, i) => {
+      const major = i % 8 === 0 || i === n - 1;
+      const o = .3 + .65 * (i / (n - 1));
+      inner += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${major ? 3.2 : 2}" ` +
+        `fill="rgba(255,${major ? 222 : 201},${major ? 150 : 77},${o.toFixed(2)})"/>`;
+    });
+    const p0 = pts[0], pn = pts[n - 1];
+    inner +=
+      `<text x="${(p0.x + 8).toFixed(1)}" y="${(p0.y - 8).toFixed(1)}" fill="rgba(255,222,150,.85)" font-size="10" font-family="sans-serif">0:00</text>` +
+      `<text x="${(pn.x + 8).toFixed(1)}" y="${(pn.y - 8).toFixed(1)}" fill="rgba(255,222,150,.85)" font-size="10" font-family="sans-serif">+${(pn.t / 1000).toFixed(2)}s</text>`;
+    svg.innerHTML = inner;
+    document.body.appendChild(svg);
+    try {
+      const a = svg.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease-out' });
+      a.id = `${NS}-trail`;
+    } catch (_) {}
+    trailUI = { svg };
+  }
+  function clearTrail() {
+    if (!trailUI) return;
+    try { trailUI.svg.remove(); } catch (_) {}
+    trailUI = null;
+  }
+
   // ----------------------------------------------------------- message bus
   function reply(payload) {
     window.postMessage({ source: `${NS}-engine`, ...payload }, '*');
   }
   function state() {
-    return { rate, frozen, vnow: vNow(), echo: !!echo };
+    // sampled between state polls (~150 ms): a live rAF loop re-registers
+    // every frame, so even a couple of hits means code is drawing motion
+    const rafBusy = rafHits >= 2;
+    rafHits = 0;
+    return { rate, frozen, vnow: vNow(), echo: !!echo, rafBusy,
+             score: !!scoreUI, trail: !!trailUI };
   }
 
   window.addEventListener('message', (ev) => {
@@ -388,8 +832,14 @@
       case 'seekBy': seekBy(m.value); break;
       case 'scan': reply({ type: 'timeline', ...scanTimeline() }); break;
       case 'scrub': reply({ type: 'scrubbed', ...scrub(m.value) }); break;
+      case 'scrubTo': reply({ type: 'scrubbed', ...scrubTo(m.value) }); break;
       case 'echo': reply({ type: 'echo', ...buildEcho(m.value.x, m.value.y) }); break;
       case 'echoOff': clearEcho(); break;
+      case 'reel': m.value ? reelStart() : reelStop(); break;
+      case 'score': reply({ type: 'score', ...buildScore(m.value.x, m.value.y) }); break;
+      case 'scoreOff': clearScore(); break;
+      case 'trail': reply({ type: 'trail', ...buildTrail(m.value.x, m.value.y) }); break;
+      case 'trailOff': clearTrail(); break;
     }
     reply({ type: 'state', state: state() });
   });

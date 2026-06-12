@@ -104,7 +104,8 @@
     <div class="actions">
       <button id="webm">Export film (.webm)</button>
       <button id="all">Save frames</button>
-      <button id="sheet" class="primary">Contact sheet</button>
+      <button id="sheet">Contact sheet</button>
+      <button id="report" class="primary">Motion report</button>
     </div>
   </header>
   <div class="meta" id="meta"></div>
@@ -113,6 +114,8 @@
     <div class="stage" id="stage">
       <img class="ghost" id="ghost" alt="">
       <img id="frame" alt="">
+      <img id="prevf" alt="" style="position:absolute;inset:0;margin:auto;max-width:100%;max-height:68vh;opacity:.5;filter:sepia(.8) hue-rotate(-18deg);pointer-events:none;display:none">
+      <img id="heatimg" alt="" style="position:absolute;inset:0;margin:auto;max-width:100%;max-height:68vh;mix-blend-mode:screen;pointer-events:none;display:none">
       <span class="badge" id="badge"></span>
     </div>
     <div class="transport">
@@ -130,7 +133,9 @@
         <option value="24">24 fps</option>
       </select>
       <button id="onion" title="Ghost the previous frame (O)">Onion skin</button>
-      <span class="hint"><b>←→</b> step · <b>space</b> play · <b>O</b> onion</span>
+      <button id="compare" title="Ghost the previous take, sepia, time-matched (X)">Compare takes</button>
+      <button id="heatbtn" title="Paint what changed between frames (H)">Motion heat</button>
+      <span class="hint"><b>←→</b> step · <b>space</b> play · <b>O</b> onion · <b>X</b> takes · <b>H</b> heat</span>
     </div>
     <div class="filmstrip" id="filmstrip"></div>
     <div class="grid-h">CONTACT SHEET</div>

@@ -11,12 +11,17 @@ const fmt = ms => {
 };
 
 let data = null;
+let prevTake = null;    // the take before this one — X ghosts it for diffing
+let heatUrls = null;    // per-frame motion-heat overlays, built lazily
+let compareOn = false, heatOn = false;
 let cur = 0;
 let playing = null;     // interval handle while the flipbook runs
 
-chrome.storage.local.get('fermataFrames').then(({ fermataFrames }) => {
+chrome.storage.local.get(['fermataFrames', 'fermataPrev']).then(({ fermataFrames, fermataPrev }) => {
   if (!fermataFrames || !fermataFrames.frames || !fermataFrames.frames.length) return;
   data = fermataFrames;
+  prevTake = fermataPrev && fermataPrev.frames && fermataPrev.frames.length ? fermataPrev : null;
+  $('compare').disabled = !prevTake;
   const { frames, meta } = data;
 
   $('empty').style.display = 'none';
@@ -59,6 +64,14 @@ function show(i) {
   $('frame').src = data.frames[cur].url;
   $('ghost').src = cur > 0 ? data.frames[cur - 1].url : '';
   $('ghost').style.visibility = cur > 0 ? '' : 'hidden';
+  if (compareOn && prevTake) {
+    const np = prevTake.frames.length;
+    $('prevf').src = prevTake.frames[Math.round(cur * (np - 1) / Math.max(1, n - 1))].url;
+  }
+  $('prevf').style.display = compareOn && prevTake ? '' : 'none';
+  const hu = heatOn && heatUrls && heatUrls[cur];
+  $('heatimg').style.display = hu ? '' : 'none';
+  if (hu) $('heatimg').src = hu;
   $('tc').textContent = '+' + fmt(data.frames[cur].t);
   $('badge').textContent = `${String(cur + 1).padStart(2, '0')} / ${String(n).padStart(2, '0')}`;
   [...$('filmstrip').children].forEach((el, j) => el.classList.toggle('on', j === cur));
@@ -91,12 +104,62 @@ $('onion').addEventListener('click', () => {
   $('onion').classList.toggle('on');
 });
 
+$('compare').addEventListener('click', () => {
+  if (!prevTake) return;
+  compareOn = !compareOn;
+  $('compare').classList.toggle('on', compareOn);
+  show(cur);
+});
+
+// Motion heat: where, and how much, each frame differs from the one before —
+// the change between instants painted as warmth.
+async function buildHeat() {
+  if (heatUrls) return;
+  const imgs = await loadAll();
+  const w = Math.min(480, imgs[0].width);
+  const h = Math.round(imgs[0].height * (w / imgs[0].width));
+  const mk = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+  const ca = mk(), cb = mk(), co = mk();
+  const ga = ca.getContext('2d', { willReadFrequently: true });
+  const gb = cb.getContext('2d', { willReadFrequently: true });
+  const go = co.getContext('2d');
+  heatUrls = [''];
+  for (let i = 1; i < imgs.length; i++) {
+    ga.drawImage(imgs[i - 1], 0, 0, w, h);
+    gb.drawImage(imgs[i], 0, 0, w, h);
+    const A = ga.getImageData(0, 0, w, h).data;
+    const B = gb.getImageData(0, 0, w, h).data;
+    const out = go.createImageData(w, h), O = out.data;
+    for (let p = 0; p < A.length; p += 4) {
+      const v = Math.min(255, Math.abs(A[p] - B[p]) + Math.abs(A[p + 1] - B[p + 1]) + Math.abs(A[p + 2] - B[p + 2]));
+      O[p] = 255; O[p + 1] = Math.max(60, 200 - v * .4); O[p + 2] = 0;
+      O[p + 3] = v > 24 ? Math.min(220, v * 1.6) : 0;
+    }
+    go.putImageData(out, 0, 0);
+    heatUrls.push(co.toDataURL('image/png'));
+  }
+}
+
+$('heatbtn').addEventListener('click', async () => {
+  if (!data) return;
+  heatOn = !heatOn;
+  $('heatbtn').classList.toggle('on', heatOn);
+  if (heatOn && !heatUrls) {
+    $('heatbtn').textContent = 'Heat…';
+    await buildHeat();
+    $('heatbtn').textContent = 'Motion heat';
+  }
+  show(cur);
+});
+
 window.addEventListener('keydown', e => {
   if (!data || e.target.tagName === 'SELECT') return;
   if (e.key === 'ArrowLeft') { stop(); show(cur - 1); }
   else if (e.key === 'ArrowRight') { stop(); show(cur + 1); }
   else if (e.key === ' ') { e.preventDefault(); play(); }
   else if (e.key.toLowerCase() === 'o') { $('onion').click(); }
+  else if (e.key.toLowerCase() === 'x') { $('compare').click(); }
+  else if (e.key.toLowerCase() === 'h') { $('heatbtn').click(); }
 });
 
 // --------------------------------------------------------------- exports
@@ -196,3 +259,69 @@ $('webm').addEventListener('click', async () => {
     btn.disabled = false; btn.textContent = 'Export film (.webm)';
   }
 });
+
+// The motion report: one self-contained HTML file — flipbook, timecodes,
+// metadata, and per-frame motion heat — droppable into a PR, Slack, or a
+// ticket as evidence of how something moved.
+$('report').addEventListener('click', async () => {
+  if (!data) return;
+  const btn = $('report');
+  btn.disabled = true; btn.textContent = 'Building…';
+  try {
+    await buildHeat();
+    const payload = { frames: data.frames, meta: data.meta, heat: heatUrls };
+    download(URL.createObjectURL(new Blob([reportHtml(payload)], { type: 'text/html' })),
+      'fermata-motion-report.html');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Motion report';
+  }
+});
+
+function reportHtml(p) {
+  const json = JSON.stringify(p).replace(/</g, '\\u003c');
+  const src = (p.meta.url || '').replace(/</g, '&lt;');
+  const when = p.meta.captured ? new Date(p.meta.captured).toLocaleString() : '';
+  return `<!doctype html><html><head><meta charset="utf-8">
+<title>Fermata — motion report</title>
+<style>
+body{background:#100f0b;color:#e8e3d8;font:13px -apple-system,"Segoe UI",sans-serif;padding:28px;margin:0}
+h1{font:italic 400 22px Georgia,serif;color:#ffc94d;margin:0 0 2px}
+.src{color:#8b8472;font-size:11px;margin:2px 0 4px;word-break:break-all}
+.meta{color:#b89a4e;font-size:11px;margin-bottom:16px}
+.stage{position:relative;display:inline-block;border:1px solid #36322a;border-radius:10px;overflow:hidden;max-width:100%}
+.stage img{display:block;max-width:100%;max-height:70vh}
+#h{position:absolute;left:0;top:0;width:100%;height:100%;mix-blend-mode:screen;pointer-events:none;display:none}
+#tc{position:absolute;left:10px;top:10px;color:#ffb000;font-size:11px;background:rgba(16,15,11,.8);padding:3px 8px;border-radius:5px;font-variant-numeric:tabular-nums}
+.bar{margin:12px 0}
+.bar button{background:#ffb000;border:0;border-radius:6px;padding:6px 14px;font-weight:700;cursor:pointer;font:inherit}
+.hint{color:#56503f;font-size:10px;margin-left:10px}
+#strip{display:flex;gap:6px;overflow-x:auto;margin-top:12px;padding-bottom:6px}
+#strip img{width:110px;border:1px solid #262219;border-radius:4px;cursor:pointer;display:block}
+#strip img.on{border-color:#ffb000}
+</style></head><body>
+<h1>Fermata — motion report</h1>
+<div class="src">${src}</div>
+<div class="meta">${p.frames.length} frames · ${Math.round(p.meta.spanMs)} ms virtual · ${p.meta.mode}${when ? ' · ' + when : ''}</div>
+<div class="stage"><img id="f"><img id="h"><div id="tc"></div></div>
+<div class="bar"><button id="play">play</button><span class="hint">arrows step · space plays · H motion heat</span></div>
+<div id="strip"></div>
+<script>
+var D=${json},i=0,playing=null,heat=false;
+var f=document.getElementById('f'),hh=document.getElementById('h'),
+    tc=document.getElementById('tc'),strip=document.getElementById('strip');
+D.frames.forEach(function(fr,j){var im=document.createElement('img');im.src=fr.url;
+  im.onclick=function(){show(j)};strip.appendChild(im);});
+function show(j){var n=D.frames.length;i=((j%n)+n)%n;f.src=D.frames[i].url;
+  tc.textContent='+'+(D.frames[i].t/1000).toFixed(3)+'s · '+(i+1)+'/'+n;
+  var hu=heat&&D.heat&&D.heat[i];hh.style.display=hu?'block':'none';if(hu)hh.src=hu;
+  [].forEach.call(strip.children,function(el,k){el.className=k===i?'on':''});}
+function play(){if(playing){clearInterval(playing);playing=null;return;}
+  playing=setInterval(function(){show(i+1)},1000/6);}
+document.getElementById('play').onclick=play;
+window.addEventListener('keydown',function(e){
+  if(e.key==='ArrowRight')show(i+1);else if(e.key==='ArrowLeft')show(i-1);
+  else if(e.key===' '){e.preventDefault();play();}
+  else if(e.key.toLowerCase()==='h'){heat=!heat;show(i);}});
+show(0);
+</`+`script></body></html>`;
+}

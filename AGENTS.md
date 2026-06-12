@@ -106,20 +106,28 @@ staggered `currentTime`s, fanned through `translateZ`.
 1. **The page is the interface.** Fermata adds one quiet capsule of words at
    the bottom; everything else happens to the page itself (tilt, echoes,
    scrub). No panels, no wizards, no settings.
-2. **One key per move, named in plain words** — freeze, step, speed, echo,
-   record, leave. Every capsule hint is also a clickable button, so pointer
-   users are never stranded. Never use jargon like "HUD", "transport", or
-   "scope" in UI copy.
-3. **Entirely keyboard-driven** — space, arrows, E, R, esc while Fermata is
-   active; `⌥⇧F` to enter/leave. Keys are ignored while focus is in an
-   editable field (except esc).
-4. **Announce, don't explain** — tempo changes and freezes show a brief serif
+2. **One key per move, named in plain words** — freeze, step, speed, loop,
+   echo, record, leave. Every capsule hint is also a clickable button, so
+   pointer users are never stranded. Never use jargon like "HUD", "transport",
+   or "scope" in UI copy.
+3. **Entirely keyboard-driven** — space, arrows, `[` `]` L (loop),
+   S (score, `shift S` copies code), T (trail), K (link), E (echo), R (record),
+   esc while Fermata is active; `⌥⇧F` to enter/leave. Keys are ignored while
+   focus is in an editable field (except esc). Entering pulls keyboard focus
+   back from the browser chrome so keys work without clicking the page first.
+   Annotations (score, trail, echoes) live in the page's own tilted space —
+   never in panels.
+4. **The reel, not a trap.** While active, every finite animation the page
+   performs is remembered and stays seekable after finishing; freezing opens
+   a timeline from entry (or the last 30 s) to now. There is no "catch" mode —
+   activate, interact, then rewind.
+5. **Announce, don't explain** — tempo changes and freezes show a brief serif
    word with a plain-language subtitle ("adagio — quarter speed"), then get out
    of the way.
-5. **Status is visible** — capsule shows tempo word, rate, timecode; the
+6. **Status is visible** — capsule shows tempo word, rate, timecode; the
    toolbar badge mirrors the tab's clock (`HELD` / rate / nothing at 1×).
    Silent failure is unacceptable.
-6. **Frames are always clean** — the page flattens and all overlays hide
+7. **Frames are always clean** — the page flattens and all overlays hide
    before each capture; storyboard opens automatically after a record.
 
 ## Visual and aesthetic source of truth
@@ -171,8 +179,10 @@ Avoid:
    restores after. Body inline styles are saved and restored exactly.
 6. Drag-to-scrub and click-swallowing apply only while frozen, and never to
    Fermata's own surfaces.
-7. Record needs zero settings: timeline span when a strip exists, else 800 ms
-   of clock; 12 frames (`shift R` = 24).
+7. Record needs zero settings: a marked loop region when one exists, else the
+   timeline span when a strip exists, else 800 ms of clock. Frame count
+   follows the span — one per ~80 virtual ms, clamped 8–24 (`shift R`
+   forces 24).
 8. Respect `captureVisibleTab` quota (~2/sec): backoff in capture loop, show
    the recording pill between captures, never during them.
 
