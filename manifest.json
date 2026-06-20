@@ -3,7 +3,7 @@
   "name": "Fermata",
   "version": "0.4.0",
   "description": "Freeze a page's clock and the live DOM tilts into 3D. Slow, step, scrub, echo, and record motion frame-perfect.",
-  "permissions": ["storage", "unlimitedStorage", "activeTab"],
+  "permissions": ["storage", "unlimitedStorage"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "src/background.js" },
   "content_scripts": [
@@ -30,11 +30,11 @@
   "commands": {
     "_execute_action": {
       "suggested_key": { "default": "Alt+Shift+F" },
-      "description": "Toggle the Fermata HUD"
+      "description": "Toggle Fermata"
     }
   },
   "action": {
-    "default_title": "Fermata — toggle HUD",
+    "default_title": "Fermata — hold the page's clock",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

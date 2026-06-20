@@ -71,11 +71,9 @@ jobs:
       - name: Pack CRX
         env:
           CHROME: ${{ steps.chrome.outputs.chrome-path }}
-        run: ./scripts/pack-crx.sh
-
-      - name: Verify CRX3 magic
         run: |
-          test "$(head -c 4 dist/fermata.crx)" = "Cr24" || { echo "not a CRX3"; exit 1; }
+          ./scripts/pack-crx.sh   # asserts the CRX3 "Cr24" magic internally
+          rm -f key.pem           # don't leave the signing key on the runner FS
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

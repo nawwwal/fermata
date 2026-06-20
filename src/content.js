@@ -61,12 +61,22 @@
   // ------------------------------------------------------------ engine bus
   const send = (cmd, value) => window.postMessage({ source: `${NS}-hud`, cmd, value }, '*');
 
+  // The bus is same-window postMessage, so a page script could forge an engine
+  // message. Treat every field as untrusted: validate the state shape, coerce
+  // numbers, and cap the copyable code — labels already go in via textContent.
+  const num = (v, d = 0) => (Number.isFinite(+v) ? +v : d);
+  function sanitizeState(s) {
+    if (!s || typeof s !== 'object') return null;
+    return { rate: num(s.rate, 1), frozen: !!s.frozen, vnow: num(s.vnow),
+             echo: !!s.echo, score: !!s.score, trail: !!s.trail, rafBusy: !!s.rafBusy };
+  }
+
   window.addEventListener('message', (ev) => {
     const m = ev.data;
     if (!m || m.source !== `${NS}-engine`) return;
-    if (m.type === 'state') { st = m.state; render(); }
-    if (m.type === 'timeline') { tl = { count: m.count, endMs: m.endMs, t: m.t }; renderRibbon(); }
-    if (m.type === 'scrubbed') { tl.t = m.t; if (m.endMs) tl.endMs = m.endMs; renderRibbon(); }
+    if (m.type === 'state') { const s = sanitizeState(m.state); if (s) { st = s; render(); } }
+    if (m.type === 'timeline') { tl = { count: num(m.count), endMs: num(m.endMs), t: num(m.t) }; renderRibbon(); }
+    if (m.type === 'scrubbed') { tl.t = num(m.t); if (m.endMs) tl.endMs = num(m.endMs); renderRibbon(); }
     if (m.type === 'profile') drawWave(m.peaks);
     if (m.type === 'probe') showWhisper(m);
     if (m.type === 'echo') {
@@ -74,7 +84,7 @@
       else toast('nothing moves here', 'point at something animating and press E');
     }
     if (m.type === 'score') {
-      if (m.count) { lastScore = m.code || ''; toast('the score', `${m.label} — shift S copies the code`); }
+      if (m.count) { lastScore = String(m.code || '').slice(0, 20000); toast('the score', `${m.label} — shift S copies the code`); }
       else toast('nothing to score', 'point at something animating and press S');
     }
     if (m.type === 'trail') {
@@ -700,6 +710,7 @@
   // orbit as the cursor moves — a critically damped spring, so the slab has
   // mass and momentum instead of a leash. The room answers: rim lights and
   // the contact shadow under the slab move with the same spring.
+  const SPRING_K = 42, SPRING_C = 13;   // critically damped: c ≈ 2√k, settles without wobble
   let orbitVel = { rx: 0, ry: 0 };
   let orbitPrevT = 0;
   function startOrbit() {
@@ -719,10 +730,9 @@
     orbitPrevT = now;
     orbit.ry = ((mouse.x / innerWidth) - 0.5) * 7;
     orbit.rx = 13 - ((mouse.y / innerHeight) - 0.5) * 5;
-    const K = 42, C = 13;            // c ≈ 2√k — settles without wobble
     let moving = false;
     for (const ax of ['rx', 'ry']) {
-      orbitVel[ax] += (K * (orbit[ax] - orbitCur[ax]) - C * orbitVel[ax]) * dt;
+      orbitVel[ax] += (SPRING_K * (orbit[ax] - orbitCur[ax]) - SPRING_C * orbitVel[ax]) * dt;
       orbitCur[ax] += orbitVel[ax] * dt;
       if (Math.abs(orbit[ax] - orbitCur[ax]) > 0.002 || Math.abs(orbitVel[ax]) > 0.01)
         moving = true;
@@ -989,9 +999,10 @@
   }, true);
   // the window's edges are moments, not just extremes — scrubs settle onto
   // the start and especially onto "now" instead of stranding a pixel short
+  const DETENT = 0.015;   // snap the scrub onto the window's ends within this fraction
   const detent = (f) => {
     f = Math.max(0, Math.min(1, f));
-    return f > 0.985 ? 1 : f < 0.015 ? 0 : f;
+    return f > 1 - DETENT ? 1 : f < DETENT ? 0 : f;
   };
 
   window.addEventListener('pointermove', (e) => {
@@ -1306,11 +1317,10 @@
 <div class="rec" id="recpill"><span class="dot"></span><span id="rectext">recording</span></div>
 <div class="whisper" id="whisper"></div>`;
 
+    // populate `ui` straight from the markup so the lookup can never drift from
+    // the ids actually present in the shadow root
     ui = {};
-    for (const id of ['vig','stage','ground','rimL','rimR','toast','tword','tplain','ribbon','band',
-                      'rfill','ma','mb','ph','bubble','rdur','capsule','glyph','wave',
-                      'tempo','word','plain','time','hints','recpill','rectext','whisper'])
-      ui[id] = root.getElementById(id);
+    root.querySelectorAll('[id]').forEach((el) => { ui[el.id] = el; });
 
     requestAnimationFrame(() => ui.vig && ui.vig.classList.add('in'));
     ui.tempo.addEventListener('click', () => setTempo(tempoIndex() - 1));

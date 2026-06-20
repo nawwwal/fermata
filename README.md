@@ -15,6 +15,8 @@ The mechanism: Fermata takes ownership of the page's clock — `performance.now`
 3. Reload the tab once — the clock engine injects at `document_start` and must arrive before the page's own scripts
 4. Press `⌥⇧F` (or click the toolbar icon)
 
+**Permissions.** `<all_urls>` host access — the engine must inject at `document_start` on whatever page you study, and `captureVisibleTab` (for recording) reads the active tab through it. `storage` + `unlimitedStorage` — a storyboard is up to 24 full-viewport PNG frames plus the previous take held in `chrome.storage.local`, which on a high-resolution display can exceed the 10 MB local-storage cap; `unlimitedStorage` lifts it. No `activeTab`, no network, no analytics.
+
 ---
 
 ## How it reads
@@ -59,7 +61,7 @@ JS-driven motion can be slowed, frozen, and stepped forward — code cannot be u
 
 All function-callback timers run through Fermata's virtual queue — including `requestIdleCallback` loops: changing the rate retimes pending timers, freezing stops them, stepping fires the ones it crosses. The legacy string form — `setTimeout("code", ms)` — falls through to the real clock.
 
-The ledger also records styles written through the CSSOM (`insertRule` / `deleteRule`) — the channel CSS-in-JS libraries use, which `MutationObserver` cannot see — so a styled-components hover rewinds like any other change. (`adoptedStyleSheets` replacement is not yet recorded.)
+The ledger also records styles written through the CSSOM (`insertRule` / `deleteRule`) — the channel CSS-in-JS libraries use, which `MutationObserver` cannot see — so a styled-components hover rewinds like any other change. This is best-effort: rule edits are replayed by their position in the stylesheet, so on sheets that churn many rules between captures (some CSS-in-JS runtimes) a rewind can land on the wrong rule. (`adoptedStyleSheets` replacement is not yet recorded.)
 
 Pages that capture `performance.now` into a local variable before Fermata's patch runs — possible with certain bundler patterns — escape the forged clock. Their CSS/WAAPI output is still governed.
 

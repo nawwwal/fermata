@@ -44,14 +44,20 @@
     governNow(); governMedia(true); repump();
   }
   function setFrozen(p) {
-    if (frozen === !!p) { governNow(); repump(); return; }
+    // Only short-circuit when the state is already fully consistent — a frozen
+    // state with no window must be allowed to rebuild.
+    if (frozen === !!p && (!p || win)) { governNow(); repump(); return; }
     rebase(); frozen = !!p;
     if (frozen) { buildWindow(); holdMedia(); }
     else {
-      if (win) histSeek(win.end);   // snap history back to the present before time resumes
-      win = null; liveInf = null;
-      releaseMedia();
-      clearScore(); clearTrail();   // body-space annotations die with the freeze
+      // Teardown must never strand the page frozen: even if the snap-back step
+      // throws, media is released and annotations are cleared.
+      try { if (win) histSeek(win.end); }   // snap history back to the present before time resumes
+      finally {
+        win = null; liveInf = null;
+        releaseMedia();
+        clearAnnotations();   // echo/score/trail all die with the freeze
+      }
     }
     governNow(); repump();
   }
@@ -183,17 +189,19 @@
   // (schedulers, React's old fallback, lazy painters) must not escape the
   // forged clock. Modelled as a short virtual timeout with a synthetic
   // deadline; precise idle semantics matter less than obeying the freeze.
+  const RIC_DELAY = 16;    // virtual ms until the idle callback runs
+  const RIC_BUDGET = 12;   // virtual ms of "time remaining" reported to it
   const realRIC = window.requestIdleCallback && window.requestIdleCallback.bind(window);
   const realCancelRIC = window.cancelIdleCallback && window.cancelIdleCallback.bind(window);
   if (realRIC) {
     window.requestIdleCallback = function (fn, opts) {
       if (typeof fn !== 'function') return realRIC(fn, opts);
       const id = ++timerId;
-      const due = vNow() + Math.min(Math.max(1, Number(opts && opts.timeout) || 16), 16);
+      const due = vNow() + Math.min(Math.max(1, Number(opts && opts.timeout) || RIC_DELAY), RIC_DELAY);
       timers.set(id, {
         fn: () => {
           const start = vNow();
-          fn({ didTimeout: false, timeRemaining: () => Math.max(0, 12 - (vNow() - start)) });
+          fn({ didTimeout: false, timeRemaining: () => Math.max(0, RIC_BUDGET - (vNow() - start)) });
         },
         args: [], due, period: null,
       });
@@ -212,29 +220,37 @@
   // the same trade. One-time cost per context, paid at creation.
   const realGetContext = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function (type, attrs) {
-    if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl')
+    // Respect a page that deliberately opted out (it chose memory over
+    // readability); otherwise preserve so the film can read the buffer later.
+    if ((type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') &&
+        !(attrs && attrs.preserveDrawingBuffer === false))
       attrs = Object.assign({}, attrs, { preserveDrawingBuffer: true });
     return realGetContext.call(this, type, attrs);
   };
 
   // CSS-in-JS writes styles through the CSSOM, which MutationObserver cannot
-  // see — without this, a styled-components hover never rewinds. Rule edits
-  // join the ledger like any other DOM change. Pass-through cost when the
-  // ledger is off: one boolean check.
+  // see — without this, a styled-components hover never rewinds. The prototype
+  // patch is installed only while the ledger runs (cssPatch, toggled by
+  // ledgerStart/ledgerStop), so a page that never activates Fermata pays
+  // nothing on its hottest CSSOM path.
   const realInsertRule = CSSStyleSheet.prototype.insertRule;
   const realDeleteRule = CSSStyleSheet.prototype.deleteRule;
-  CSSStyleSheet.prototype.insertRule = function (rule, index = 0) {
+  function patchedInsertRule(rule, index = 0) {
     const r = realInsertRule.call(this, rule, index);
     cssNote(this, 'i', index, rule);
     return r;
-  };
-  CSSStyleSheet.prototype.deleteRule = function (index) {
+  }
+  function patchedDeleteRule(index) {
     let txt = null;
     try { txt = this.cssRules[index] && this.cssRules[index].cssText; } catch (_) {}
     const r = realDeleteRule.call(this, index);
     cssNote(this, 'd', index, txt);
     return r;
-  };
+  }
+  function cssPatch(on) {
+    CSSStyleSheet.prototype.insertRule = on ? patchedInsertRule : realInsertRule;
+    CSSStyleSheet.prototype.deleteRule = on ? patchedDeleteRule : realDeleteRule;
+  }
 
   // ----------------------------------------------------- declarative domain
   // Everything Fermata creates is exempt from its own time authority: elements
@@ -256,8 +272,18 @@
   // goes through this.
   function governable(a) {
     if (isOurs(a)) return false;
-    try { if (a.timeline && !(a.timeline instanceof DocumentTimeline)) return false; }
-    catch (_) {}
+    // Scroll-driven animations live on scroll position, not time — never seize
+    // them. Detect by type, and fall back to the constructor name when
+    // `instanceof` is unavailable (cross-realm, stripped global) so an
+    // uncertain timeline is treated as scroll-driven rather than governed.
+    try {
+      const tl = a.timeline;
+      if (tl) {
+        const ctor = tl.constructor && tl.constructor.name;
+        if (ctor === 'ScrollTimeline' || ctor === 'ViewTimeline') return false;
+        if (typeof DocumentTimeline !== 'undefined' && !(tl instanceof DocumentTimeline)) return false;
+      }
+    } catch (_) {}
     return true;
   }
 
@@ -450,9 +476,11 @@
       attributes: true, attributeOldValue: true,
       characterData: true, characterDataOldValue: true,
     });
+    cssPatch(true);   // start watching CSSOM rule edits only now
   }
   function ledgerStop() {
     if (mo) { try { mo.disconnect(); } catch (_) {} mo = null; }
+    cssPatch(false);  // restore the native CSSOM methods — zero pass-through cost
     mlog = []; domPos = 0;
   }
   function ledgerPush(recs) {
@@ -512,8 +540,12 @@
   function undoM(e) {
     try {
       if (e.k === 's') {
-        if (e.op === 'i') realDeleteRule.call(e.sh, e.idx);
-        else if (e.rule != null) realInsertRule.call(e.sh, e.rule, e.idx);
+        // indices into a live sheet drift as other rules come and go; clamp so
+        // a stale index degrades to a no-op instead of throwing (CSSOM rewind
+        // is best-effort on churning CSS-in-JS sheets — see README)
+        const len = e.sh.cssRules ? e.sh.cssRules.length : 0;
+        if (e.op === 'i') { if (e.idx < len) realDeleteRule.call(e.sh, e.idx); }
+        else if (e.rule != null) realInsertRule.call(e.sh, e.rule, Math.min(e.idx, len));
       }
       else if (e.k === 'a') { e.o == null ? e.tg.removeAttribute(e.n) : e.tg.setAttribute(e.n, e.o); }
       else if (e.k === 't') e.tg.data = e.o;
@@ -531,8 +563,9 @@
   function redoM(e, P) {
     try {
       if (e.k === 's') {
-        if (e.op === 'i') { if (e.rule != null) realInsertRule.call(e.sh, e.rule, e.idx); }
-        else realDeleteRule.call(e.sh, e.idx);
+        const len = e.sh.cssRules ? e.sh.cssRules.length : 0;
+        if (e.op === 'i') { if (e.rule != null) realInsertRule.call(e.sh, e.rule, Math.min(e.idx, len)); }
+        else if (e.idx < len) realDeleteRule.call(e.sh, e.idx);
       }
       else if (e.k === 'a') {
         e.v == null ? e.tg.removeAttribute(e.n) : e.tg.setAttribute(e.n, e.v);
@@ -641,7 +674,7 @@
         filmCtx.drawImage(cv, 0, 0, w, h);
         const url = oc.toDataURL('image/jpeg', 0.55);
         const last = f.snaps[f.snaps.length - 1];
-        if (last && last.url === url && !force) { last.t = vNow(); continue; }
+        if (last && last.url === url && !force) continue;  // static canvas: keep the snap at its true draw time
         f.snaps.push({ t: vNow(), url });
         if (f.snaps.length > FILM_MAX) f.snaps.splice(0, f.snaps.length - FILM_MAX);
       } catch (_) { f.bad = true; }    // tainted canvas — leave it in peace
@@ -833,15 +866,22 @@
     return { el, anims, label: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') };
   }
 
+  // Shared opening for echo/score/trail: find the moving element under the
+  // point, enter the freeze, and measure it flat. Returns null if nothing there
+  // moves — every builder bails the same way.
+  function beginOverlay(x, y) {
+    if (!document.body) return null;
+    const hit = findMoving(x, y);
+    if (!hit) return null;
+    if (!frozen) setFrozen(true);
+    return { hit, r: measureFlat(hit.el) };
+  }
+
   function buildEcho(x, y) {
     clearEcho();
-    if (!document.body) return { count: 0 };
-    const hit = findMoving(x, y);
-    if (!hit) return { count: 0 };
-    const el = hit.el, anims = hit.anims;
-
-    if (!frozen) setFrozen(true);
-    const r = measureFlat(el);
+    const o = beginOverlay(x, y);
+    if (!o) return { count: 0 };
+    const el = o.hit.el, anims = o.hit.anims, r = o.r;
     if (r.width < 4 || r.height < 4) return { count: 0 };
 
     let span = 0;
@@ -985,15 +1025,12 @@
 
   function buildScore(x, y) {
     clearScore();
-    if (!document.body) return { count: 0 };
-    const hit = findMoving(x, y);
-    if (!hit) return { count: 0 };
-    if (!frozen) setFrozen(true);
-    const r = measureFlat(hit.el);
-    const items = hit.anims.slice(0, 3).map(describeAnim);
+    const o = beginOverlay(x, y);
+    if (!o) return { count: 0 };
+    const items = o.hit.anims.slice(0, 3).map(describeAnim);
     const code = items.map(codeFor).join('\n\n');
-    renderScoreCard(r, items, hit.label);
-    return { count: items.length, label: hit.label, code };
+    renderScoreCard(o.r, items, o.hit.label);
+    return { count: items.length, label: o.hit.label, code };
   }
 
   function renderScoreCard(r, items, label) {
@@ -1066,10 +1103,9 @@
   let trailUI = null;
   function buildTrail(x, y, n = 48) {
     clearTrail();
-    if (!document.body) return { count: 0 };
-    const hit = findMoving(x, y);
-    if (!hit) return { count: 0 };
-    if (!frozen) setFrozen(true);
+    const o = beginOverlay(x, y);
+    if (!o) return { count: 0 };
+    const hit = o.hit;
     if (!win || win.end - win.start < 40) return { count: 0 };
     const span = win.end - win.start;
     const p0 = win.p;
@@ -1134,6 +1170,9 @@
     try { trailUI.svg.remove(); } catch (_) {}
     trailUI = null;
   }
+  // every body-space annotation, gone in one call — used on unfreeze so no
+  // echo ghost is ever stranded in the resumed page
+  function clearAnnotations() { clearEcho(); clearScore(); clearTrail(); }
 
   // ----------------------------------------------------------- message bus
   function reply(payload) {

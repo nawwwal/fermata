@@ -44,10 +44,17 @@ version="$(node -p "require('./manifest.json').version" 2>/dev/null \
 # Stage only the files the extension actually ships — never the repo chrome
 # (.agents, README, tests, the key itself).
 stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT          # never leave staged copies behind
 pkg="$stage/fermata"
 mkdir -p "$pkg"
 cp manifest.json "$pkg/"
 cp -R src pages icons "$pkg/"
+
+# belt-and-suspenders: refuse to package the signing key or any secret material
+if [ -e "$pkg/key.pem" ] || [ -e "$pkg/.env" ] || ls "$pkg"/*.pem >/dev/null 2>&1; then
+  echo "error: refusing to package secret material found in the stage" >&2
+  exit 1
+fi
 
 rm -rf "$root/dist"
 mkdir -p "$root/dist"
@@ -58,7 +65,11 @@ mkdir -p "$root/dist"
 
 if [ ! -f "$stage/fermata.crx" ]; then
   echo "error: Chrome did not produce a CRX (key invalid, or Chrome too old?)" >&2
-  rm -rf "$stage"
+  exit 1
+fi
+# integrity guard, shared by local and CI: a real CRX3 starts with "Cr24"
+if [ "$(head -c 4 "$stage/fermata.crx")" != "Cr24" ]; then
+  echo "error: produced file is not a valid CRX3 (bad magic)" >&2
   exit 1
 fi
 

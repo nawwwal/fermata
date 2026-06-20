@@ -34,7 +34,6 @@ chrome.storage.local.get(['fermataFrames', 'fermataPrev']).then(({ fermataFrames
     `<span>span <b>${Math.round(meta.spanMs)} ms</b> virtual</span>` +
     `<span>mode <b>${meta.mode}</b></span>` +
     `<span>clock rate at capture <b>${meta.rate.toFixed(2)}×</b></span>` +
-    (meta.scope ? `<span>scope <b>${meta.scope}</b></span>` : '') +
     (when ? `<span>${when}</span>` : '');
 
   // Filmstrip + contact grid
@@ -65,6 +64,8 @@ function show(i) {
   $('ghost').src = cur > 0 ? data.frames[cur - 1].url : '';
   $('ghost').style.visibility = cur > 0 ? '' : 'hidden';
   if (compareOn && prevTake) {
+    // map this take's frame index onto the previous take's (takes can differ
+    // in length), so the same relative instant is compared
     const np = prevTake.frames.length;
     $('prevf').src = prevTake.frames[Math.round(cur * (np - 1) / Math.max(1, n - 1))].url;
   }
