@@ -1,8 +1,13 @@
 name: Release CRX
 
 # Builds a signed CRX3 for every version tag (e.g. `v0.4.0`) and attaches it
-# to a GitHub Release. If Chrome Web Store API secrets are configured, it also
-# publishes that same CRX to the store (the API and dashboard both accept CRX).
+# to a GitHub Release for direct/self-hosted installs. If Chrome Web Store API
+# secrets are configured, it also publishes a ZIP to the store.
+#
+# Why two artifacts: the published store item has its own public key (the store
+# re-signs server-side), and it differs from the local key.pem identity. So the
+# store path uploads an unsigned ZIP (key-agnostic; the store owns the key),
+# while the GitHub-release CRX is signed with key.pem for direct installs.
 #
 # Cut a release with:
 #   git tag v0.4.0 && git push origin v0.4.0
@@ -111,18 +116,22 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download the signed CRX from the build job
+      - uses: actions/checkout@v4
         if: steps.gate.outputs.ready == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: fermata-${{ needs.crx.outputs.version }}-crx
-          path: dist
 
-      - name: Upload & publish the CRX to the Chrome Web Store
+      - name: Zip the extension (store owns the signing key; ZIP is key-agnostic)
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          mkdir -p dist/pkg
+          cp manifest.json dist/pkg/
+          cp -R src pages icons dist/pkg/
+          ( cd dist/pkg && zip -q -r -X ../fermata-store.zip . )
+
+      - name: Upload & publish to the Chrome Web Store
         if: steps.gate.outputs.ready == 'true'
         run: |
           npx --yes chrome-webstore-upload-cli@3 upload \
-            --source "dist/fermata-${{ needs.crx.outputs.version }}.crx" \
+            --source dist/fermata-store.zip \
             --extension-id "$CWS_EXTENSION_ID" \
             --client-id "$CWS_CLIENT_ID" \
             --client-secret "$CWS_CLIENT_SECRET" \
