@@ -37,12 +37,28 @@ if any check fails.
    --abbrev-ref HEAD`. If there are uncommitted changes unrelated to the
    release, or the branch isn't `main`, stop and ask.
 
-2. **Resolve the version.** Read `manifest.json`'s `version`. Use the explicit
-   arg if given, else bump the patch. Confirm the chosen `vX.Y.Z` tag does not
-   already exist: `git tag -l vX.Y.Z` must be empty (and pick a higher number
-   than any existing `v*` tag).
+2. **Resolve the version + gather the changes.** Read `manifest.json`'s
+   `version`. Use the explicit arg if given, else bump the patch. Confirm the
+   chosen `vX.Y.Z` tag does not already exist: `git tag -l vX.Y.Z` must be empty
+   (and pick a higher number than any existing `v*` tag). Capture the commits
+   since the previous tag — you'll need them for both README hygiene and the
+   release notes:
+   ```
+   prev=$(git tag -l 'v*' --sort=-v:refname | head -1)   # the latest existing tag
+   git log --no-merges --stat "$prev"..HEAD
+   ```
 
-3. **Sanity-check the source** (there is no test harness, so this is the floor):
+3. **README hygiene.** Before shipping, make the docs honest. Read what changed
+   (the `git log` above) and reconcile it against `README.md` — especially the
+   **"What Fermata does not govern"** limits, the capability claims, and the
+   **Permissions** note. The repo's Definition of Done requires that behavior
+   matches README claims *or* README is updated. If a capability, limit, or
+   permission drifted, update `README.md` now (and `CLAUDE.md` if a guardrail or
+   architectural fact changed). Keep prose accurate and in voice — this is not
+   the changelog, just truth-in-advertising. Stage any doc fixes so they ride in
+   the release commit. If nothing drifted, say so and move on.
+
+4. **Sanity-check the source** (there is no test harness, so this is the floor):
    ```
    for f in src/page.js src/content.js src/background.js pages/storyboard.js; do node --check "$f"; done
    node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8'))"
@@ -51,24 +67,24 @@ if any check fails.
    valid before tagging: `./scripts/pack-crx.sh` (it asserts the `Cr24` magic
    internally). Skip the local build if there's no key — CI will build anyway.
 
-4. **Bump `manifest.json`** to the chosen version (only the `version` field).
+5. **Bump `manifest.json`** to the chosen version (only the `version` field).
 
-5. **Commit** on main:
+6. **Commit** on main (include any README/CLAUDE.md fixes from step 3):
    ```
-   git add manifest.json
+   git add manifest.json README.md CLAUDE.md
    git commit -m "Release X.Y.Z"
    ```
    End the commit message with the `Co-Authored-By: Claude …` trailer per repo
-   convention. If other staged release changes were intended, include them.
+   convention.
 
-6. **Tag and push** (tag number must match the manifest version exactly):
+7. **Tag and push** (tag number must match the manifest version exactly):
    ```
    git tag vX.Y.Z
    git push origin main
    git push origin vX.Y.Z
    ```
 
-7. **Watch CI** until both jobs finish:
+8. **Watch CI** until both jobs finish:
    ```
    id=$(gh run list --workflow=release.yml --event=push --limit 1 --json databaseId -q '.[0].databaseId')
    gh run watch "$id" --exit-status
@@ -79,23 +95,53 @@ if any check fails.
    (`gh run view "$id" --log-failed`) — common causes: the version isn't higher
    than the published one, or the Web Store API token/scope is wrong.
 
-8. **Verify the artifacts** and report links:
+9. **Write real release notes.** CI created the Release with `--generate-notes`
+   (a raw commit dump) as a fallback — replace it with curated notes. Build them
+   from the commits since the previous tag:
    ```
-   gh release view vX.Y.Z --json name,url,assets -q '.name, .url, (.assets[] | "  \(.name) (\(.size) bytes)")'
+   git log --no-merges --pretty='%s' "$prev"..vX.Y.Z
    ```
-   Confirm `fermata-X.Y.Z.crx` is attached. The store submission goes live
-   after Google's review.
+   Sort the meaningful entries into three headings — **New**, **Improved**,
+   **Fixed** — dropping pure chore/release/CI-plumbing commits. Write in
+   Fermata's calm editorial voice (see `.agents/fermata-brand-psychology.md`):
+   lead each line with what the user can now do or what no longer breaks, not
+   the implementation. Skip empty headings. Then set them, keeping the CRX asset:
+   ```
+   gh release edit vX.Y.Z --title "Fermata X.Y.Z" --notes "$(cat <<'NOTES'
+   ## New
+   - …
+
+   ## Improved
+   - …
+
+   ## Fixed
+   - …
+   NOTES
+   )"
+   ```
+
+10. **Verify the artifacts** and report links:
+    ```
+    gh release view vX.Y.Z --json name,url,assets -q '.name, .url, (.assets[] | "  \(.name) (\(.size) bytes)")'
+    ```
+    Confirm `fermata-X.Y.Z.crx` is attached and the notes read well. The store
+    submission goes live after Google's review.
 
 ## Report
 
-Tell the user: the version shipped, the GitHub Release URL + CRX asset, and
-that the store publish was accepted (pending review). Note any non-fatal CI
-annotations only if they matter.
+Tell the user: the version shipped, the GitHub Release URL + CRX asset, the
+curated release notes you wrote, any README/doc fixes you made for accuracy
+(or that none were needed), and that the store publish was accepted (pending
+review). Note any non-fatal CI annotations only if they matter.
 
 ## Guardrails
 
 - Never commit `key.pem` or any `.pem`/secret.
 - Never downgrade or reuse a version number; the store and the tag both reject it.
 - Don't change the store job to upload the CRX — it must stay a ZIP.
+- Don't ship with a README that contradicts the build — fix the prose or don't
+  release.
+- Release notes describe user-facing change, not commit churn — never just dump
+  the raw `git log`.
 - If `git push` to `main` is blocked or the tag exists, stop and surface it
   rather than forcing.
