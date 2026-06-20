@@ -41,14 +41,16 @@
 
   function setRate(r) {
     rebase(); rate = Math.max(0.001, r);
-    governNow(); repump();
+    governNow(); governMedia(true); repump();
   }
   function setFrozen(p) {
+    if (frozen === !!p) { governNow(); repump(); return; }
     rebase(); frozen = !!p;
-    if (frozen) buildWindow();
+    if (frozen) { buildWindow(); holdMedia(); }
     else {
       if (win) histSeek(win.end);   // snap history back to the present before time resumes
       win = null; liveInf = null;
+      releaseMedia();
       clearScore(); clearTrail();   // body-space annotations die with the freeze
     }
     governNow(); repump();
@@ -64,12 +66,14 @@
     }
     pump();      // run JS timers that the step crossed
     repump();
+    advanceMedia(ms);
     if (win) {
       win.end = vNow(); win.p = win.end;
       if (liveInf) for (const li of liveInf) {
         try { li.ct0 = Number(li.a.currentTime || 0); } catch (_) {}
       }
     }
+    filmSnap(true);
     echoSync();
   }
   // Move the playhead through held time — backwards is possible here, and
@@ -175,6 +179,63 @@
     realClearInterval(id);
   };
 
+  // Idle callbacks are timers too — pages that animate from rIC loops
+  // (schedulers, React's old fallback, lazy painters) must not escape the
+  // forged clock. Modelled as a short virtual timeout with a synthetic
+  // deadline; precise idle semantics matter less than obeying the freeze.
+  const realRIC = window.requestIdleCallback && window.requestIdleCallback.bind(window);
+  const realCancelRIC = window.cancelIdleCallback && window.cancelIdleCallback.bind(window);
+  if (realRIC) {
+    window.requestIdleCallback = function (fn, opts) {
+      if (typeof fn !== 'function') return realRIC(fn, opts);
+      const id = ++timerId;
+      const due = vNow() + Math.min(Math.max(1, Number(opts && opts.timeout) || 16), 16);
+      timers.set(id, {
+        fn: () => {
+          const start = vNow();
+          fn({ didTimeout: false, timeRemaining: () => Math.max(0, 12 - (vNow() - start)) });
+        },
+        args: [], due, period: null,
+      });
+      schedulePump();
+      return id;
+    };
+    window.cancelIdleCallback = function (id) {
+      if (timers.delete(id)) { schedulePump(); return; }
+      if (realCancelRIC) realCancelRIC(id);
+    };
+  }
+
+  // WebGL normally discards its buffer after compositing — unreadable to any
+  // later capture. Forcing preserveDrawingBuffer at context creation is what
+  // makes the canvas film (and any WebGL capture at all) possible; rrweb made
+  // the same trade. One-time cost per context, paid at creation.
+  const realGetContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+    if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl')
+      attrs = Object.assign({}, attrs, { preserveDrawingBuffer: true });
+    return realGetContext.call(this, type, attrs);
+  };
+
+  // CSS-in-JS writes styles through the CSSOM, which MutationObserver cannot
+  // see — without this, a styled-components hover never rewinds. Rule edits
+  // join the ledger like any other DOM change. Pass-through cost when the
+  // ledger is off: one boolean check.
+  const realInsertRule = CSSStyleSheet.prototype.insertRule;
+  const realDeleteRule = CSSStyleSheet.prototype.deleteRule;
+  CSSStyleSheet.prototype.insertRule = function (rule, index = 0) {
+    const r = realInsertRule.call(this, rule, index);
+    cssNote(this, 'i', index, rule);
+    return r;
+  };
+  CSSStyleSheet.prototype.deleteRule = function (index) {
+    let txt = null;
+    try { txt = this.cssRules[index] && this.cssRules[index].cssText; } catch (_) {}
+    const r = realDeleteRule.call(this, index);
+    cssNote(this, 'd', index, txt);
+    return r;
+  };
+
   // ----------------------------------------------------- declarative domain
   // Everything Fermata creates is exempt from its own time authority: elements
   // under [data-fermata-ui] and any Animation whose id starts with "fermata".
@@ -188,10 +249,22 @@
     return false;
   }
 
+  // The one predicate for "the clock has authority here". Scroll-driven
+  // animations live on scroll position, not time — their currentTime is a
+  // percentage and they follow the scroll, never the rate, the freeze, or
+  // the reel. Every animation query (governor, reel, echo, score, trail)
+  // goes through this.
+  function governable(a) {
+    if (isOurs(a)) return false;
+    try { if (a.timeline && !(a.timeline instanceof DocumentTimeline)) return false; }
+    catch (_) {}
+    return true;
+  }
+
   function pageAnimations() {
     let anims;
     try { anims = document.getAnimations(); } catch (_) { return []; }
-    return anims.filter(a => !isOurs(a));
+    return anims.filter(governable);
   }
 
   function endOf(a) {
@@ -228,6 +301,7 @@
         }
       } catch (_) {}
     }
+    governMedia();
     if ((rate !== 1 || frozen) && !governing) { governing = true; realRAF(governLoop); }
   }
   // Full scans of every animation are O(n) per call; on animation-heavy pages
@@ -238,6 +312,106 @@
     if (rate === 1 && !frozen) { governing = false; return; }
     if (governTick++ % 3 === 0) governNow();
     realRAF(governLoop);
+  }
+
+  // ------------------------------------------------- media + SMIL domains
+  // Video and audio run on the media clock, which exposes playbackRate and
+  // currentTime directly — natively seekable in both directions, the easiest
+  // time domain of all. SVG SMIL documents likewise expose pauseAnimations /
+  // setCurrentTime on the <svg> root. Both join the rate, the freeze, the
+  // step, and the rewind. (SMIL has no rate control — at slowed tempo it
+  // honestly keeps real speed until frozen.)
+  const mediaRate = new WeakMap();   // el -> the page's own playbackRate
+  let mediaGov = null;               // playing media held by the freeze
+  let smilGov = null;                // svg roots held by the freeze
+
+  function mediaEls() {
+    try {
+      return [...document.querySelectorAll('video,audio')]
+        .filter(m => !(m.closest && m.closest(`[${UI_ATTR}]`)));
+    } catch (_) { return []; }
+  }
+  function smilRoots() {
+    try {
+      return [...document.querySelectorAll('svg')].filter(s =>
+        s.querySelector('animate,animateTransform,animateMotion,set') &&
+        !(s.closest && s.closest(`[${UI_ATTR}]`)));
+    } catch (_) { return []; }
+  }
+  // The governor calls this every ~50 ms while off real time; the
+  // querySelectorAll sweep only needs to catch newborn media, so it runs at
+  // most twice a second — rate changes apply immediately via force.
+  let mediaGovAt = 0;
+  function governMedia(force) {
+    if (frozen) return;
+    const now = realPerfNow();
+    if (!force && now - mediaGovAt < 450) return;
+    mediaGovAt = now;
+    for (const el of mediaEls()) {
+      try {
+        if (!mediaRate.has(el)) mediaRate.set(el, el.playbackRate || 1);
+        const want = Math.max(0.0625, Math.min(16, mediaRate.get(el) * rate));
+        if (Math.abs(el.playbackRate - want) > 0.001) el.playbackRate = want;
+      } catch (_) {}
+    }
+  }
+  function holdMedia() {
+    mediaGov = []; smilGov = [];
+    for (const el of mediaEls()) {
+      try {
+        const wasPlaying = !el.paused && !el.ended && el.readyState > 1;
+        if (wasPlaying) el.pause();
+        mediaGov.push({ el, wasPlaying, t0: el.currentTime });
+      } catch (_) {}
+    }
+    for (const svg of smilRoots()) {
+      try {
+        const wasPaused = svg.animationsPaused();
+        smilGov.push({ svg, wasPaused, t0: svg.getCurrentTime() });
+        if (!wasPaused) svg.pauseAnimations();
+      } catch (_) {}
+    }
+  }
+  function releaseMedia() {
+    if (mediaGov) for (const g of mediaGov) {
+      try {
+        g.el.currentTime = g.t0;
+        if (g.wasPlaying) { const p = g.el.play(); if (p && p.catch) p.catch(() => {}); }
+      } catch (_) {}
+    }
+    if (smilGov) for (const g of smilGov) {
+      try {
+        g.svg.setCurrentTime(g.t0);
+        if (!g.wasPaused) g.svg.unpauseAnimations();
+      } catch (_) {}
+    }
+    mediaGov = null; smilGov = null;
+  }
+  // live streams and range-less servers expose a narrow (or empty) seekable
+  // range — honor it instead of writing times the element will ignore
+  function mediaClamp(el, t) {
+    try {
+      const s = el.seekable;
+      if (s && s.length) return Math.max(s.start(0), Math.min(s.end(0), t));
+    } catch (_) {}
+    return Math.max(0, t);
+  }
+  // dt = held-window milliseconds relative to the present edge (≤ 0 in
+  // history, advances t0 itself when the live edge moves)
+  function seekMedia(dt) {
+    if (mediaGov) for (const g of mediaGov) {
+      if (!g.wasPlaying) continue;
+      try { g.el.currentTime = mediaClamp(g.el, g.t0 + dt / 1000); } catch (_) {}
+    }
+    if (smilGov) for (const g of smilGov) {
+      try { g.svg.setCurrentTime(Math.max(0, g.t0 + dt / 1000)); } catch (_) {}
+    }
+  }
+  // the live edge moved: the baselines advance, then everyone lands on them
+  function advanceMedia(ms) {
+    if (mediaGov) for (const g of mediaGov) { if (g.wasPlaying) g.t0 += ms / 1000; }
+    if (smilGov) for (const g of smilGov) g.t0 += ms / 1000;
+    seekMedia(0);
   }
 
   // The reel: while Fermata is active, every finite animation the page
@@ -263,6 +437,10 @@
     const el = n && n.nodeType === 1 ? n : n && n.parentElement;
     return !!(el && el.closest && el.closest(`[${UI_ATTR}]`));
   }
+  // styles and nodes Fermata itself holds on the page (pinned fixed elements,
+  // tilt companions, film overlays) are not page history
+  const isHeld = (n) => !!(n && n.nodeType === 1 && n.hasAttribute &&
+    (n.hasAttribute(UI_ATTR) || n.hasAttribute('data-fermata-held')));
   function ledgerStart() {
     if (mo) return;
     mlog = []; domPos = 0;
@@ -289,11 +467,11 @@
       // tilted top-layer companions) are not page history
       if (m.type === 'attributes') {
         if (m.attributeName && m.attributeName.indexOf('data-fermata') === 0) continue;
-        if (m.target.hasAttribute && m.target.hasAttribute('data-fermata-held')) continue;
+        if (isHeld(m.target)) continue;
       }
       if (m.type === 'childList') {
-        const add = [...m.addedNodes].filter(n => !oursNode(n));
-        const rem = [...m.removedNodes].filter(n => !(n.nodeType === 1 && n.hasAttribute(UI_ATTR)));
+        const add = [...m.addedNodes].filter(n => !oursNode(n) && !isHeld(n));
+        const rem = [...m.removedNodes].filter(n => !isHeld(n));
         if (!add.length && !rem.length) continue;
         mlog.push({ t, k: 'c', tg: m.target, add, rem, prev: m.previousSibling, next: m.nextSibling });
       } else if (m.type === 'attributes') {
@@ -303,12 +481,22 @@
         mlog.push({ t, k: 't', tg: m.target, o: m.oldValue, v: m.target.data });
       }
     }
+    ledgerCap(atHead);
+  }
+  function ledgerCap(atHead) {
     if (mlog.length > LOG_MAX) {
       const drop = mlog.length - (LOG_MAX - 2000);
       mlog.splice(0, drop);
       domPos = Math.max(0, domPos - drop);
     }
     if (atHead) domPos = mlog.length;
+  }
+  // CSSOM rule edits arrive here from the prototype patches above
+  function cssNote(sheet, op, idx, rule) {
+    if (!mo || replaying) return;
+    const atHead = domPos === mlog.length;
+    mlog.push({ t: vNow(), k: 's', sh: sheet, op, idx, rule });
+    ledgerCap(atHead);
   }
   // park any animations a replayed change just (re)started at the moment in
   // history they belong to
@@ -317,13 +505,17 @@
     let anims = [];
     try { anims = node.getAnimations({ subtree: true }); } catch (_) { return; }
     for (const a of anims) {
-      if (reelSet && reelSet.has(a)) continue;
+      if (!governable(a) || (reelSet && reelSet.has(a))) continue;
       try { if (a.playState === 'running') { a.pause(); a.currentTime = Math.max(0, P - born); } } catch (_) {}
     }
   }
   function undoM(e) {
     try {
-      if (e.k === 'a') { e.o == null ? e.tg.removeAttribute(e.n) : e.tg.setAttribute(e.n, e.o); }
+      if (e.k === 's') {
+        if (e.op === 'i') realDeleteRule.call(e.sh, e.idx);
+        else if (e.rule != null) realInsertRule.call(e.sh, e.rule, e.idx);
+      }
+      else if (e.k === 'a') { e.o == null ? e.tg.removeAttribute(e.n) : e.tg.setAttribute(e.n, e.o); }
       else if (e.k === 't') e.tg.data = e.o;
       else {
         for (let i = e.add.length - 1; i >= 0; i--) { try { e.add[i].remove(); } catch (_) {} }
@@ -338,7 +530,11 @@
   }
   function redoM(e, P) {
     try {
-      if (e.k === 'a') {
+      if (e.k === 's') {
+        if (e.op === 'i') { if (e.rule != null) realInsertRule.call(e.sh, e.rule, e.idx); }
+        else realDeleteRule.call(e.sh, e.idx);
+      }
+      else if (e.k === 'a') {
         e.v == null ? e.tg.removeAttribute(e.n) : e.tg.setAttribute(e.n, e.v);
         parkNew(e.tg, P, e.t);
       } else if (e.k === 't') e.tg.data = e.v;
@@ -380,15 +576,109 @@
   function reelStart() {
     if (reelOn) return;
     reelOn = true; reel = []; reelSet = new WeakSet(); enterV = vNow();
+    film = new Map(); filmScanAt = 0; filmSnapAt = 0;
     ledgerStart();
     const tick = () => {
       if (!reelOn) return;
-      if (!frozen) for (const a of pageAnimations()) reelNote(a);
+      if (!frozen) {
+        for (const a of pageAnimations()) reelNote(a);
+        filmSnap(false);
+      }
       realRAF(tick);
     };
     realRAF(tick);
   }
-  function reelStop() { reelOn = false; reel = []; reelSet = null; enterV = null; ledgerStop(); }
+  function reelStop() {
+    reelOn = false; reel = []; reelSet = null; enterV = null;
+    ledgerStop(); filmStop();
+  }
+
+  // The film: canvases — 2D, WebGL — are pixels, not a declarative record;
+  // there is nothing to seek. So while the reel runs, every visible canvas is
+  // sampled into small JPEG frames a few times a second (rrweb's approach),
+  // and rewinding lays the nearest frame over the canvas in the page's own
+  // space. Forward stepping stays live (rAF re-renders); the film is how the
+  // past gets pixels. ~2 MB per canvas for a full 30 s window.
+  const FILM_STEP = 280, FILM_MAX = 120, FILM_W = 480;
+  let film = null;                  // Map canvas -> { snaps:[{t,url}], overlay, bad }
+  let filmList = [];
+  let filmScanAt = 0, filmSnapAt = 0;
+  let filmCtx = null;
+
+  function filmScan() {
+    filmList = [];
+    let all;
+    try { all = document.querySelectorAll('canvas'); } catch (_) { return; }
+    for (const cv of all) {
+      if (filmList.length >= 4) break;
+      if (cv.closest && cv.closest(`[${UI_ATTR}]`)) continue;
+      if (cv.width < 96 || cv.height < 96) continue;
+      let r;
+      try { r = cv.getBoundingClientRect(); } catch (_) { continue; }
+      if (r.width < 48 || r.height < 48 ||
+          r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
+      filmList.push(cv);
+      if (!film.has(cv)) film.set(cv, { snaps: [], overlay: null, bad: false });
+    }
+  }
+  function filmSnap(force) {
+    if (!film) return;
+    const now = realPerfNow();
+    if (now - filmScanAt > 2000) { filmScanAt = now; filmScan(); }
+    if (!force && now - filmSnapAt < FILM_STEP) return;
+    filmSnapAt = now;
+    for (const cv of filmList) {
+      const f = film.get(cv);
+      if (!f || f.bad) continue;
+      try {
+        const scale = Math.min(1, FILM_W / cv.width);
+        const w = Math.max(1, Math.round(cv.width * scale));
+        const h = Math.max(1, Math.round(cv.height * scale));
+        if (!filmCtx) filmCtx = document.createElement('canvas').getContext('2d');
+        const oc = filmCtx.canvas;
+        if (oc.width !== w) oc.width = w;
+        if (oc.height !== h) oc.height = h;
+        filmCtx.drawImage(cv, 0, 0, w, h);
+        const url = oc.toDataURL('image/jpeg', 0.55);
+        const last = f.snaps[f.snaps.length - 1];
+        if (last && last.url === url && !force) { last.t = vNow(); continue; }
+        f.snaps.push({ t: vNow(), url });
+        if (f.snaps.length > FILM_MAX) f.snaps.splice(0, f.snaps.length - FILM_MAX);
+      } catch (_) { f.bad = true; }    // tainted canvas — leave it in peace
+    }
+  }
+  function filmSeek(P) {
+    if (!film || !win) return;
+    for (const [cv, f] of film) {
+      if (!f.snaps.length) continue;
+      if (P >= win.end - 120 || !cv.isConnected) { filmHide(f); continue; }
+      let s = f.snaps[0];
+      for (const sn of f.snaps) { if (sn.t <= P) s = sn; else break; }
+      if (!f.overlay) {
+        const img = document.createElement('img');
+        img.setAttribute('data-fermata-held', '');
+        img.style.cssText =
+          'position:absolute;pointer-events:none;z-index:2147483600;margin:0;';
+        f.overlay = img;
+      }
+      if (!f.overlay.isConnected) {
+        const r = measureFlat(cv);
+        f.overlay.style.left = r.left.toFixed(1) + 'px';
+        f.overlay.style.top = r.top.toFixed(1) + 'px';
+        f.overlay.style.width = r.width.toFixed(1) + 'px';
+        f.overlay.style.height = r.height.toFixed(1) + 'px';
+        try { document.body.appendChild(f.overlay); } catch (_) { continue; }
+      }
+      if (f.overlay.src !== s.url) f.overlay.src = s.url;
+    }
+  }
+  function filmHide(f) {
+    if (f.overlay && f.overlay.isConnected) { try { f.overlay.remove(); } catch (_) {} }
+  }
+  function filmStop() {
+    if (film) for (const [, f] of film) filmHide(f);
+    film = null; filmList = []; filmCtx = null;
+  }
 
   // The held timeline: [start, end] in vclock ms, p = the playhead. The
   // right edge is the present; everything left of it is replayable history.
@@ -429,6 +719,8 @@
         li.a.currentTime = Math.max(0, li.ct0 + (P - win.end));
       } catch (_) {}
     }
+    seekMedia(P - win.end);
+    filmSeek(P);
     echoSync();
   }
 
@@ -442,6 +734,41 @@
     for (const it of reel) start = Math.min(start, it.born);
     start = Math.max(start, now - REEL_WINDOW, enterV == null ? now : enterV);
     return { count: reel.length, endMs: now - start, t: now - start };
+  }
+
+  // The timeline's terrain: how much was happening at each instant —
+  // remembered animations mid-flight plus DOM churn from the ledger. The
+  // ribbon draws it so the moments are visible before you scrub to them.
+  function profile(n) {
+    const N = Math.max(8, Math.min(160, (n | 0) || 72));
+    let s, e;
+    if (frozen && win) { s = win.start; e = win.end; }
+    else {
+      e = vNow(); s = e;
+      for (const it of reel) s = Math.min(s, it.born);
+      s = Math.max(s, e - REEL_WINDOW, enterV == null ? e : enterV);
+    }
+    const len = Math.max(1, e - s);
+    const raw = new Float32Array(N);
+    for (const it of reel) {
+      const i0 = Math.max(0, Math.floor((it.born - s) / len * N));
+      const i1 = Math.min(N - 1, Math.floor((it.born + it.end - s) / len * N));
+      for (let i = i0; i <= i1; i++) raw[i] += 1;
+    }
+    for (const mm of mlog) {
+      const f = (mm.t - s) / len;
+      if (f >= 0 && f <= 1) raw[Math.min(N - 1, (f * N) | 0)] += 0.5;
+    }
+    const sm = new Float32Array(N);
+    let max = 0;
+    for (let i = 0; i < N; i++) {
+      sm[i] = (raw[Math.max(0, i - 1)] + 2 * raw[i] + raw[Math.min(N - 1, i + 1)]) / 4;
+      if (sm[i] > max) max = sm[i];
+    }
+    const peaks = [];
+    for (let i = 0; i < N; i++)
+      peaks.push(max ? +Math.pow(sm[i] / max, 0.55).toFixed(3) : 0);
+    return { peaks };
   }
 
   function scrubTo(rel) {
@@ -492,7 +819,7 @@
   function findMoving(x, y) {
     let el = document.elementFromPoint(x, y);
     const moving = n => {
-      try { return n.getAnimations({ subtree: true }).filter(a => !isOurs(a)); }
+      try { return n.getAnimations({ subtree: true }).filter(governable); }
       catch (_) { return []; }
     };
     let anims = [];
@@ -836,6 +1163,12 @@
       case 'echo': reply({ type: 'echo', ...buildEcho(m.value.x, m.value.y) }); break;
       case 'echoOff': clearEcho(); break;
       case 'reel': m.value ? reelStart() : reelStop(); break;
+      case 'profile': reply({ type: 'profile', ...profile(m.value) }); break;
+      case 'probe': {
+        const hit = m.value ? findMoving(m.value.x, m.value.y) : null;
+        reply({ type: 'probe', has: !!hit, label: hit ? hit.label : '' });
+        break;
+      }
       case 'score': reply({ type: 'score', ...buildScore(m.value.x, m.value.y) }); break;
       case 'scoreOff': clearScore(); break;
       case 'trail': reply({ type: 'trail', ...buildTrail(m.value.x, m.value.y) }); break;

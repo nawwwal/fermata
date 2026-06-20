@@ -76,7 +76,7 @@ Four files, three worlds:
 
 | File | World | Role |
 |------|-------|------|
-| `page.js` | MAIN (`document_start`) | Virtual clock, timer queue, animation governor, echoes |
+| `page.js` | MAIN (`document_start`) | Virtual clock, timer queue, animation governor, media/SMIL governor, canvas film, reel + ledger, echoes |
 | `content.js` | ISOLATED (`document_idle`) | Capsule, tilt, keyboard, drag-scrub, stop-motion recorder |
 | `background.js` | Service worker | Toggle, badge, `captureVisibleTab`, open storyboard |
 | `storyboard.html` / `storyboard.js` | Extension page | Flipbook viewer + exports from `chrome.storage.local` |
@@ -84,13 +84,23 @@ Four files, three worlds:
 Cross-world bus: `postMessage` with namespace `fermata` (`fermata-hud` ↔
 `fermata-engine`).
 
-Two time domains (keep them in lockstep when stepping):
+Four time domains (keep them in lockstep when stepping):
 
 1. **Imperative clock** — patched `performance.now`, `Date.now`, `new Date()`,
-   rAF timestamps, and a virtual timer queue (pending timers retime on rate
-   change, freeze on hold, fire when stepped across) for JS-driven motion.
+   rAF timestamps, `requestIdleCallback`, and a virtual timer queue (pending
+   timers retime on rate change, freeze on hold, fire when stepped across)
+   for JS-driven motion.
 2. **Declarative domain** — `playbackRate` on live `Animation` objects; scrubbing
-   seeks `currentTime` on scoped animations.
+   seeks `currentTime` on scoped animations. Scroll-driven animations
+   (non-document timelines) are exempt everywhere — their axis is the scrollbar.
+3. **Media clock** — video/audio `playbackRate` scales with the rate; freezing
+   pauses; stepping and rewinding seek `currentTime` within the element's
+   `seekable` range. SVG SMIL roots pause/seek via `pauseAnimations` /
+   `setCurrentTime` (no rate control exists for SMIL).
+4. **The film** — canvases (2D/WebGL) are sampled into small JPEG frames while
+   the reel runs (`preserveDrawingBuffer` is forced at context creation to
+   make WebGL readable); rewinding overlays the nearest frame in body space,
+   marked `data-fermata-held` so the ledger ignores it.
 
 Exemption rule: everything Fermata creates is exempt from its own time
 authority — elements under `data-fermata-ui` and any `Animation` whose `id`
@@ -144,6 +154,11 @@ Current language:
   `ui-serif, "Iowan Old Style", Palatino, Georgia` — usually italic
 - Clean system **sans** for working text and key hints — **no monospace
   anywhere**
+- **Motion tokens are law**: the overlay moves on four durations
+  (`--d1: 120ms`, `--d2: 200ms`, `--d3: 320ms`, `--d4: 700ms`) and three
+  curves (`--eo`, `--eo5`, `--eio`). Never an ad-hoc duration in overlay CSS.
+- **Type scale**: serif display 18px (capsule word) / sans 13px (working) /
+  11px (labels, hints) / 10px (kbd, caps, tips). No sizes between.
 - The fermata glyph (arc + dot, inline SVG) is the only logo treatment
 - The capsule is a dark golden glass pill; key hints render as soft `kbd` caps
 
@@ -208,9 +223,11 @@ Manual verification checklist:
 
 ## Guardrails
 
-- Do not add reverse playback for imperative JS motion in the live page.
-- Do not retime video/audio elements or compositor scroll physics without an
-  explicit product decision.
+- Do not add reverse playback for imperative JS motion in the live page
+  (the ledger replays its *record*; code is never re-executed).
+- Video/audio retiming is a made decision: rate scales `playbackRate`, freeze
+  pauses, step/rewind seek within `seekable`. Do not retime scroll-driven
+  animations or compositor scroll physics — their axis is the scrollbar.
 - Do not capture `performance.now` into locals before patch in new code paths
   (bundlers that inline early reads can escape the clock).
 - Do not move planning into long local markdown roadmaps; use Plane when it

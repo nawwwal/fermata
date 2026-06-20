@@ -22,7 +22,6 @@
   // entrances and exits accelerate toward the user; on-screen moves breathe
   const EASE = {
     out: 'cubic-bezier(.215,.61,.355,1)',      // cubic — workhorse
-    outQuart: 'cubic-bezier(.165,.84,.44,1)',
     outQuint: 'cubic-bezier(.23,1,.32,1)',     // big entrances
     inOut: 'cubic-bezier(.645,.045,.355,1)',   // already-visible movement
   };
@@ -68,6 +67,8 @@
     if (m.type === 'state') { st = m.state; render(); }
     if (m.type === 'timeline') { tl = { count: m.count, endMs: m.endMs, t: m.t }; renderRibbon(); }
     if (m.type === 'scrubbed') { tl.t = m.t; if (m.endMs) tl.endMs = m.endMs; renderRibbon(); }
+    if (m.type === 'profile') drawWave(m.peaks);
+    if (m.type === 'probe') showWhisper(m);
     if (m.type === 'echo') {
       if (m.count) toast('echo', `${m.label} — past behind, future ahead`);
       else toast('nothing moves here', 'point at something animating and press E');
@@ -114,7 +115,29 @@
     if (ui.capsule) ui.capsule.style.animationDelay = (sweep ? sweep + 420 : 0) + 'ms';
     setTimeout(() => { if (active) toast('fermata', 'you hold this page’s clock — space to freeze', true); },
       sweep ? sweep + 140 : 120);
+    maybeFirstRun();
     tickLoop();
+  }
+
+  // once, ever: if the very first visit goes four seconds without a key,
+  // one serif line says what to do — then never again
+  let firstRunT = null;
+  function maybeFirstRun() {
+    try {
+      chrome.storage.local.get('fermataSeen', (v) => {
+        if (v && v.fermataSeen) return;
+        firstRunT = setTimeout(() => {
+          firstRunT = null;
+          if (!active || st.frozen) return;
+          toast('press space', 'the page will hold its breath');
+          firstRunDone();
+        }, 4200);
+      });
+    } catch (_) {}
+  }
+  function firstRunDone() {
+    if (firstRunT) { clearTimeout(firstRunT); firstRunT = null; }
+    try { chrome.storage.local.set({ fermataSeen: true }); } catch (_) {}
   }
 
   function leave() {
@@ -188,7 +211,8 @@
     // Element delays are solved against the crest's actual position so the
     // drawn lines and the element motion stay welded.
     const lead = 120, travelBase = vh + 2 * lead;
-    const dur = Math.round(sweep * 1.75);
+    // leaving is an exhale: noticeably shorter and quieter than arriving
+    const dur = Math.round(sweep * (out ? 1.15 : 1.75));
 
     const targets = splashTargets(vw, vh, vArea);
     const cellParams = [];
@@ -200,11 +224,12 @@
       const hit = Math.max(0, Math.min(1, (out ? vh + lead - cy : cy + lead) / travelBase));
       const delay = hit * sweep;
       // big ships ride low, small craft bob; the swell sheds a little energy
-      // as it crosses
+      // as it crosses. The page barely moves — a breath, not a heave; the
+      // light is the protagonist and the elements only acknowledge it.
       const size = 1 - Math.min((r.width * r.height) / (vArea * 0.4), 1) * 0.6;
       const spent = 1 - frac * 0.22;
-      const A = (out ? 10 : 16) * size * spent + 4;           // crest height, px of z
-      const T = Math.min(5.5, Math.max(1.4, A * 0.35)) *
+      const A = (out ? 3.5 : 6) * size * spent + 1.6;         // crest height, px of z
+      const T = Math.min(2.2, Math.max(0.6, A * 0.35)) *
                 Math.min(1, 260 / Math.max(r.width, r.height));  // pitch, deg
       const p = {
         delay, A, T, out,
@@ -309,7 +334,7 @@
       const g = cv.getContext('2d');
       const speed = travelBase / sweep;            // px per ms, constant
       const GAP = 6, STEP = 8;
-      const AMP = 34, SIG = 260, LAM = 380;        // free ripple in open ground
+      const AMP = out ? 24 : 34, SIG = 260, LAM = 380;  // free ripple in open ground
       const SIG2 = 300, LAM2 = 520;                // trailing swell, broader
       const trail = out ? -340 : 340;
       const tStart = performance.now();
@@ -378,7 +403,7 @@
       } catch (_) {}
     });
 
-    setTimeout(() => { try { sh.remove(); } catch (_) {} }, sweep + 1700);
+    setTimeout(() => { try { sh.remove(); } catch (_) {} }, sweep + (out ? 900 : 1700));
     return sweep;
   }
 
@@ -427,7 +452,7 @@
         }
       } catch (_) {}
       const a = el.animate(waveKeyframes(p, flat), {
-        duration: p.out ? 1080 : 1350,   // exits run ~20% faster
+        duration: p.out ? 680 : 1350,    // exits run well under half the entrance
         delay: p.delay,
         composite: 'add',
       });
@@ -483,7 +508,7 @@
       transform: b.style.transform, origin: b.style.transformOrigin,
       shadow: b.style.boxShadow, outline: b.style.outline,
       radius: b.style.borderRadius, will: b.style.willChange,
-      bg: d.style.background,
+      bg: d.style.background, cursor: d.style.cursor,
     };
     // Measure and pin BEFORE touching any body style: will-change alone
     // already makes the body a containing block, which re-anchors every
@@ -497,9 +522,13 @@
     d.style.background =
       'radial-gradient(130% 100% at 50% -8%, #342812 0%, #1d160c 38%, #0b0906 100%)';
     b.style.transformOrigin = `50% ${originY.toFixed(1)}px`;
+    // the last shadow is the slab's lower rim catching the room's light —
+    // a hairline of thickness so the page reads as an object, not a plane
     b.style.boxShadow =
-      '0 90px 160px rgba(0,0,0,.6), 0 28px 60px rgba(0,0,0,.45), 0 0 110px rgba(255,176,0,.09)';
+      '0 90px 160px rgba(0,0,0,.6), 0 28px 60px rgba(0,0,0,.45), ' +
+      '0 0 110px rgba(255,176,0,.09), 0 1px 0 rgba(255,210,110,.28)';
     b.style.outline = '1px solid rgba(255,176,0,.25)';
+    d.style.cursor = 'ew-resize';    // the frozen page itself scrubs — say so
     b.style.borderRadius = '10px';
     b.style.willChange = 'transform';
     if (ui.stage) ui.stage.classList.add('in');
@@ -535,7 +564,7 @@
       b.style.transform = saved.transform; b.style.transformOrigin = saved.origin;
       b.style.boxShadow = saved.shadow; b.style.outline = saved.outline;
       b.style.borderRadius = saved.radius; b.style.willChange = saved.will;
-      d.style.background = saved.bg;
+      d.style.background = saved.bg; d.style.cursor = saved.cursor;
       saved = null;
       restoreFixed();
       restoreCompanions();
@@ -668,41 +697,86 @@
     companions = [];
   }
 
-  // gentle orbit as the cursor moves — eased toward the cursor so the slab
-  // feels suspended, not strapped to the pointer
+  // orbit as the cursor moves — a critically damped spring, so the slab has
+  // mass and momentum instead of a leash. The room answers: rim lights and
+  // the contact shadow under the slab move with the same spring.
+  let orbitVel = { rx: 0, ry: 0 };
+  let orbitPrevT = 0;
   function startOrbit() {
     if (orbitRaf || REDUCE.matches) return;
+    orbitVel = { rx: 0, ry: 0 };
+    orbitPrevT = 0;
     orbitRaf = requestAnimationFrame(orbitLoop);
   }
   function stopOrbit() {
     if (orbitRaf) cancelAnimationFrame(orbitRaf);
     orbitRaf = 0;
   }
-  function orbitLoop() {
+  function orbitLoop(now) {
     orbitRaf = 0;
     if (!tilted || recording || !document.body) return;
+    const dt = Math.min(0.05, orbitPrevT ? (now - orbitPrevT) / 1000 : 1 / 60);
+    orbitPrevT = now;
     orbit.ry = ((mouse.x / innerWidth) - 0.5) * 7;
     orbit.rx = 13 - ((mouse.y / innerHeight) - 0.5) * 5;
-    const dx = orbit.rx - orbitCur.rx, dy = orbit.ry - orbitCur.ry;
-    if (Math.abs(dx) > 0.002 || Math.abs(dy) > 0.002) {
-      orbitCur.rx += dx * 0.12;
-      orbitCur.ry += dy * 0.12;
-      document.body.style.transform = tiltTransform(orbitCur);
-      syncCompanions(orbitCur);
-      syncRims(orbitCur);
+    const K = 42, C = 13;            // c ≈ 2√k — settles without wobble
+    let moving = false;
+    for (const ax of ['rx', 'ry']) {
+      orbitVel[ax] += (K * (orbit[ax] - orbitCur[ax]) - C * orbitVel[ax]) * dt;
+      orbitCur[ax] += orbitVel[ax] * dt;
+      if (Math.abs(orbit[ax] - orbitCur[ax]) > 0.002 || Math.abs(orbitVel[ax]) > 0.01)
+        moving = true;
     }
+    if (!moving) { orbitPrevT = 0; return; }   // settled: sleep until the mouse wakes us
+    document.body.style.transform = tiltTransform(orbitCur);
+    syncCompanions(orbitCur);
+    syncStage(orbitCur);
     orbitRaf = requestAnimationFrame(orbitLoop);
   }
-  function syncRims(o) {
+  function syncStage(o) {
     if (!ui.rimL) return;
     const k = o.ry / 3.5;
     ui.rimL.style.opacity = Math.max(0, -k * 0.9).toFixed(3);
     ui.rimR.style.opacity = Math.max(0, k * 0.9).toFixed(3);
+    if (ui.ground)
+      ui.ground.style.transform = `translateX(calc(-50% + ${(-o.ry * 7).toFixed(1)}px))`;
   }
 
   window.addEventListener('mousemove', (e) => {
     mouse = { x: e.clientX, y: e.clientY };
+    if (tilted && !orbitRaf && !tiltAnim) startOrbit();   // the settled slab wakes
+    if (active) scheduleWhisper(e);
   }, true);
+
+  // ------------------------------------------------------------- the whisper
+  // The studies introduce themselves where they apply: rest the cursor on
+  // something that moves and a quiet word appears beside it. No panel, no
+  // tour — the page tells you what it can do, where it can do it.
+  let whisperT = null, whisperHideT = null;
+  function scheduleWhisper(e) {
+    hideWhisper();
+    clearTimeout(whisperT);
+    // shadow retargeting makes any event from the overlay target the host
+    // itself, so this stays O(1) on the mousemove hot path
+    if (recording || e.target === host) return;
+    whisperT = setTimeout(() => {
+      if (!active || recording || drag || loopSel.playing || !host) return;
+      send('probe', { x: mouse.x, y: mouse.y });
+    }, 420);
+  }
+  function hideWhisper() {
+    clearTimeout(whisperHideT);
+    if (ui.whisper) ui.whisper.classList.remove('show');
+  }
+  function showWhisper(m) {
+    if (!m.has || !ui.whisper || st.score || st.trail || st.echo) return;
+    ui.whisper.textContent = 'E echo · S score · T trail';
+    ui.whisper.style.left = Math.min(innerWidth - 180, mouse.x + 16) + 'px';
+    ui.whisper.style.top = Math.min(innerHeight - 140, mouse.y + 22) + 'px';
+    ui.whisper.classList.add('show');
+    clearTimeout(whisperHideT);
+    whisperHideT = setTimeout(hideWhisper, 2600);
+  }
 
   // ---------------------------------------------------------------- freeze
   function setFrozen(f) {
@@ -710,7 +784,7 @@
     if (f) {
       tilt();
       send('scan');
-      toast('frozen', 'drag left — everything since you entered replays · L loops · S scores');
+      toast('frozen', 'drag left — the past replays under your hand');
     } else {
       stopLoop();
       loopSel.a = loopSel.b = null;
@@ -738,12 +812,31 @@
     stopLoop();
     send('nudge', ms);
     send('scan');
+    pulsePlayhead();
   }
   function stepBack(ms) {
     if (!st.frozen) setFrozen(true);
     stopLoop();
     send('seekBy', -ms);
     send('scan');
+    pulsePlayhead();
+  }
+
+  // stepping is a ratchet: the playhead clicks forward with a tiny overshoot
+  // and the timecode bubble surfaces for a beat, right where the effect is
+  let phTimer = null;
+  function pulsePlayhead() {
+    if (!ui.ph || REDUCE.matches) return;
+    ui.ribbon.classList.add('live');
+    clearTimeout(phTimer);
+    phTimer = setTimeout(() => {
+      if (!loopSel.playing && !drag && ui.ribbon) ui.ribbon.classList.remove('live');
+    }, 450);
+    try {
+      ui.ph.animate(
+        [{ transform: 'scale(1)' }, { transform: 'scale(1.45)' }, { transform: 'scale(1.25)' }],
+        { duration: 160, easing: EASE.out });
+    } catch (_) {}
   }
 
   // ------------------------------------------------------------------ loop
@@ -863,6 +956,7 @@
       default: return;
     }
     flashKey(e.code);
+    if (firstRunT) firstRunDone();   // they found the keys on their own
     e.preventDefault(); e.stopPropagation();
   }, true);
 
@@ -893,11 +987,17 @@
     if (ui.ribbon) ui.ribbon.classList.add('live');
     e.preventDefault(); e.stopPropagation();
   }, true);
+  // the window's edges are moments, not just extremes — scrubs settle onto
+  // the start and especially onto "now" instead of stranding a pixel short
+  const detent = (f) => {
+    f = Math.max(0, Math.min(1, f));
+    return f > 0.985 ? 1 : f < 0.015 ? 0 : f;
+  };
+
   window.addEventListener('pointermove', (e) => {
     if (!drag) return;
     drag.moved = true;
-    const f = Math.max(0, Math.min(1, drag.f0 + (e.clientX - drag.x0) / (innerWidth * 0.7)));
-    send('scrub', f);
+    send('scrub', detent(drag.f0 + (e.clientX - drag.x0) / (innerWidth * 0.7)));
     e.preventDefault(); e.stopPropagation();
   }, true);
   window.addEventListener('pointerup', (e) => {
@@ -925,28 +1025,39 @@
 <style>
   :host { all: initial;
     --amber: #ffb000; --amber-hi: #ffc94d;
-    --eo: ${EASE.out}; --eo4: ${EASE.outQuart}; --eo5: ${EASE.outQuint}; --eio: ${EASE.inOut}; }
+    /* the whole overlay moves on four durations and three curves — nothing else */
+    --d1: 120ms; --d2: 200ms; --d3: 320ms; --d4: 700ms;
+    --eo: ${EASE.out}; --eo5: ${EASE.outQuint}; --eio: ${EASE.inOut};
+    --noise: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>"); }
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
   .vignette { position: fixed; inset: 0; pointer-events: none; opacity: 0;
     border: 1px solid rgba(255,176,0,.26);
     box-shadow: inset 0 0 120px rgba(255,176,0,.05), inset 0 0 30px rgba(0,0,0,.16);
-    transition: opacity .5s var(--eo), box-shadow .6s var(--eio), border-color .6s var(--eio); }
+    transition: opacity var(--d3) var(--eo), box-shadow var(--d4) var(--eio), border-color var(--d4) var(--eio); }
   .vignette.in { opacity: 1; }
   .vignette.held { border-color: rgba(255,176,0,.42);
     box-shadow: inset 0 0 160px rgba(255,176,0,.09), inset 0 0 42px rgba(0,0,0,.22); }
 
-  /* the room: floor glow, an overhead beam, side rims that answer the orbit */
+  /* the room: floor glow, an overhead beam, side rims that answer the orbit,
+     grain so the dark gradients never band, and a contact shadow that
+     grounds the slab on the floor */
   .stage { position: fixed; inset: 0; pointer-events: none; opacity: 0;
-    transition: opacity .7s var(--eo); }
+    transition: opacity var(--d4) var(--eo); }
   .stage.in { opacity: 1; }
+  .noise { position: absolute; inset: 0; opacity: .045;
+    background-image: var(--noise); background-size: 160px 160px; }
+  .ground { position: absolute; left: 50%; bottom: 3vh; width: 74vw; height: 10vh;
+    transform: translateX(-50%); will-change: transform;
+    background: radial-gradient(50% 50% at 50% 50%, rgba(0,0,0,.6), transparent 70%);
+    filter: blur(16px); }
   .beam { position: absolute; left: 50%; top: 0; width: 130vw; height: 38vh;
     transform: translateX(-50%);
     background: radial-gradient(55% 100% at 50% 0%, rgba(255,196,77,.07), transparent 75%); }
   .floor { position: absolute; left: -5vw; right: -5vw; bottom: 0; height: 24vh;
     background: linear-gradient(to top, rgba(255,176,0,.09), rgba(255,176,0,.025) 50%, transparent); }
   .rim { position: absolute; top: 8vh; bottom: 8vh; width: 12vw; opacity: 0;
-    transition: opacity .3s linear; }
+    transition: opacity var(--d2) linear; }
   .rim.l { left: 0; background: linear-gradient(to right, rgba(255,196,77,.12), transparent); }
   .rim.r { right: 0; background: linear-gradient(to left, rgba(255,196,77,.12), transparent); }
 
@@ -956,10 +1067,10 @@
   .toast { position: fixed; left: 50%; top: 36%; transform: translate(-50%,-50%) scale(.94);
     text-align: center; pointer-events: none; opacity: 0; padding: 46px 88px; filter: blur(6px);
     visibility: hidden;
-    transition: opacity .18s ease, transform .18s ease, filter .18s ease, visibility .18s; }
+    transition: opacity var(--d2) ease, transform var(--d2) ease, filter var(--d2) ease, visibility var(--d2); }
   .toast.show { opacity: 1; transform: translate(-50%,-50%) scale(1); filter: blur(0);
     visibility: visible;
-    transition: opacity .3s var(--eo5), transform .3s var(--eo5), filter .3s var(--eo5), visibility 0s; }
+    transition: opacity var(--d3) var(--eo5), transform var(--d3) var(--eo5), filter var(--d3) var(--eo5), visibility 0s; }
   /* ——— tempoglass: a material where light obeys the held clock ———
      A slab of glass cut from slowed time. The page shows through it in
      golden-hour tint. Light that enters travels slower than light outside:
@@ -972,10 +1083,9 @@
      the heat-haze above a candle, frozen. It has no surface — only optical
      density. The box is far larger than the visible pool so every feather
      completes long before any boundary exists; blur falls progressively
-     22 → 8 → 2.5 → 0 through gradient-masked layers. The pool sags a little
-     (time has weight); its texture is interference — two ring fields
-     breathing out of phase into shifting moiré; the air inside trembles,
-     frozen mid-motion. */
+     22 → 8 → 2.5 → 0 through gradient-masked layers. Two textures only:
+     the progressive frost, and the sweep of light that decelerates as it
+     crosses the thickened middle. Everything else stays out of its way. */
   /* NOTE: the slab itself must stay unmasked — a masked ancestor becomes a
      backdrop root and its backdrop-filter children go blind to the page.
      Each frost feathers itself; everything painted lives in .pool, which
@@ -1001,23 +1111,6 @@
     background:
       radial-gradient(46% 40% at 50% 70%, rgba(150,95,15,.07), transparent 80%),
       radial-gradient(52% 50% at 50% 52%, rgba(255,210,120,.12), rgba(255,176,0,.04) 60%, transparent 80%); }
-  .rings { position: absolute; inset: 0; will-change: transform; }
-  .rings.r1 { background: repeating-radial-gradient(circle at 50% 55%,
-      rgba(255,214,130,.05) 0 1px, transparent 1px 26px);
-    animation: fringe1 9s var(--eio) infinite alternate; }
-  .rings.r2 { background: repeating-radial-gradient(circle at 50% 55%,
-      rgba(255,190,80,.04) 0 1px, transparent 1px 34px);
-    animation: fringe2 13s var(--eio) infinite alternate; }
-  @keyframes fringe1 { to { transform: scale(1.045); } }
-  @keyframes fringe2 { from { transform: scale(1.05); } to { transform: scale(1); } }
-  .grain { position: absolute; inset: 0; opacity: .05;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>");
-    background-size: 160px 160px;
-    animation: tremble .9s steps(3) infinite; }
-  @keyframes tremble {
-    0%, 100% { transform: translate(0, 0); }
-    33% { transform: translate(1px, -1px); }
-    66% { transform: translate(-1px, 1px); } }
   .sweep { position: absolute; top: -30%; bottom: -30%; width: 34%; left: 0; opacity: 0;
     background: linear-gradient(100deg, transparent, rgba(255,243,214,.34) 45%,
       rgba(255,224,150,.18) 60%, transparent);
@@ -1035,10 +1128,6 @@
     12% { opacity: .45; }
     88% { opacity: .45; }
     100% { transform: translateX(440%) skewX(-8deg); opacity: 0; } }
-  .after { position: absolute; inset: 0; opacity: 0; pointer-events: none;
-    background: radial-gradient(70% 90% at 50% 45%, rgba(255,214,130,.16), transparent 75%); }
-  .toast.show .after { animation: memory 1.6s ease-out both; }
-  @keyframes memory { 0% { opacity: 0; } 38% { opacity: 1; } 100% { opacity: 0; } }
   .toast .word { position: relative; font: italic 400 54px/1.1 ${SERIF}; color: var(--amber-hi);
     letter-spacing: .01em;
     /* prismatic fringes: type seen through dense time splits faintly */
@@ -1050,8 +1139,13 @@
 
   .ribbon { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%) translateY(8px);
     width: min(620px, 72vw); height: 36px; pointer-events: auto; cursor: ew-resize;
-    opacity: 0; transition: opacity .3s var(--eo), transform .3s var(--eo); }
-  .ribbon.in { opacity: 1; transform: translateX(-50%) translateY(0); }
+    opacity: 0; transition: opacity var(--d3) var(--eo), transform var(--d3) var(--eo); }
+  /* the freeze is one downbeat: tilt lands first, the ribbon answers a
+     beat later (delay applies entering only — leaving is immediate) */
+  .ribbon.in { opacity: 1; transform: translateX(-50%) translateY(0); transition-delay: 160ms; }
+  /* the seismograph: the window's activity drawn as terrain — peaks are
+     moments, flat ground is idle time. You can see where to scrub. */
+  .ribbon .wave { position: absolute; inset: 0; width: 100%; height: 100%; }
   .ribbon .rail { position: absolute; left: 0; right: 0; top: 19px; height: 2px; border-radius: 1px;
     background: linear-gradient(90deg, rgba(255,176,0,.14), rgba(255,176,0,.38), rgba(255,176,0,.14)); }
   .ribbon .band { position: absolute; top: -3px; height: 8px; border-radius: 4px; display: none;
@@ -1069,54 +1163,57 @@
   .ribbon .mark.b { border-right: 1.5px solid var(--amber-hi); margin-left: -5px; }
   .ribbon .ph { position: absolute; top: 14px; width: 12px; height: 12px; margin-left: -6px;
     border-radius: 50%; background: var(--amber-hi); box-shadow: 0 0 12px rgba(255,176,0,.8);
-    transition: left 80ms linear, transform .15s var(--eo); }
-  .ribbon.live .ph { transition: transform .15s var(--eo); }
+    transition: left 80ms linear, transform var(--d1) var(--eo); }
+  .ribbon.live .ph { transition: transform var(--d1) var(--eo); }
   .ribbon:hover .ph, .ribbon.live .ph { transform: scale(1.25); }
   .bubble { position: absolute; top: -16px; transform: translateX(-50%); padding: 3px 9px;
     font: 400 11px/1 ${SANS}; color: #ffe2b0; background: rgba(17,13,7,.92);
     border: 1px solid rgba(255,176,0,.3); border-radius: 999px; opacity: 0; white-space: nowrap;
-    font-variant-numeric: tabular-nums; transition: opacity .15s ease; }
+    font-variant-numeric: tabular-nums; transition: opacity var(--d1) ease; }
   .ribbon:hover .bubble, .ribbon.live .bubble { opacity: 1; }
-  .cap { position: absolute; top: 27px; font: 400 10.5px ${SANS};
+  .cap { position: absolute; top: 27px; font: 400 10px ${SANS};
     color: rgba(255,222,150,.55); font-variant-numeric: tabular-nums; }
   .cap.c0 { left: 0; } .cap.c1 { right: 0; }
   .ribbon .empty { position: absolute; inset: 0; display: none; align-items: center;
-    justify-content: center; font: 400 11.5px ${SANS}; color: rgba(242,232,213,.5);
+    justify-content: center; font: 400 11px ${SANS}; color: rgba(242,232,213,.5);
     letter-spacing: .03em; }
   .ribbon.bare { cursor: default; pointer-events: none; }
   .ribbon.bare .empty { display: flex; }
   .ribbon.bare .rail, .ribbon.bare .fill, .ribbon.bare .ph, .ribbon.bare .tick,
-  .ribbon.bare .cap, .ribbon.bare .mark, .ribbon.bare .band, .ribbon.bare .bubble { display: none; }
+  .ribbon.bare .cap, .ribbon.bare .mark, .ribbon.bare .band, .ribbon.bare .bubble,
+  .ribbon.bare .wave { display: none; }
 
   .capsule { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
-    display: flex; align-items: center; gap: 14px; pointer-events: auto;
+    display: flex; align-items: center; gap: 14px; pointer-events: auto; cursor: default;
+    max-width: calc(100vw - 24px);
     background: rgba(17,13,7,.82); backdrop-filter: blur(14px) saturate(1.1);
     border: 1px solid rgba(255,176,0,.3); border-radius: 999px;
     padding: 10px 22px 11px 18px;
     box-shadow: 0 16px 50px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,210,110,.12);
     font: 400 13px/1.3 ${SANS}; color: #f2e8d5; white-space: nowrap;
-    animation: rise .42s var(--eo5) backwards;
-    transition: opacity .2s ease, transform .2s ease, filter .2s ease; }
+    animation: rise var(--d3) var(--eo5) backwards;
+    transition: opacity var(--d2) ease, transform var(--d2) ease, filter var(--d2) ease; }
   @keyframes rise { from { opacity: 0; transform: translate(-50%, 18px) scale(.97); filter: blur(6px); } }
   .capsule.out { opacity: 0; transform: translate(-50%, 12px) scale(.98); filter: blur(4px); }
+  @media (max-width: 760px) { .tempo .plain { display: none; } }
   .glyph { color: var(--amber); display: flex; flex: none;
     filter: drop-shadow(0 0 6px rgba(255,176,0,.5));
-    transition: filter .3s ease, color .3s ease; }
+    transition: filter var(--d3) ease, color var(--d3) ease; }
   .glyph.held { color: #ffd45e; animation: breathe 2.6s var(--eio) infinite; }
   @keyframes breathe {
     0%, 100% { filter: drop-shadow(0 0 12px rgba(255,200,60,.85)); }
     50% { filter: drop-shadow(0 0 5px rgba(255,200,60,.4)); } }
   .tempo { display: flex; align-items: baseline; gap: 8px; cursor: pointer; }
-  .tempo .word { font: italic 400 19px/1 ${SERIF}; color: var(--amber-hi); }
-  .tempo .plain { font: 400 11.5px ${SANS}; color: rgba(242,232,213,.55); }
-  .time { font: 400 12.5px ${SANS}; color: rgba(255,222,150,.9);
+  .tempo .word { font: italic 400 18px/1 ${SERIF}; color: var(--amber-hi); }
+  .tempo .plain { font: 400 11px ${SANS}; color: rgba(242,232,213,.55); }
+  .time { font: 400 13px ${SANS}; color: rgba(255,222,150,.9);
     font-variant-numeric: tabular-nums; min-width: 56px; }
   .sep { width: 1px; height: 20px; background: rgba(255,176,0,.22); }
   .hints { display: flex; gap: 12px; align-items: center; }
   .hint { display: flex; gap: 5px; align-items: center; background: none; border: none;
-    font: 400 11.5px ${SANS}; color: rgba(242,232,213,.62); cursor: pointer; padding: 0;
-    transition: color .15s ease, transform .12s var(--eo);
-    animation: hintin .25s var(--eo) backwards; }
+    font: 400 11px ${SANS}; color: rgba(242,232,213,.62); cursor: pointer; padding: 0;
+    transition: color var(--d1) ease, transform var(--d1) var(--eo);
+    animation: hintin var(--d2) var(--eo) backwards; }
   @keyframes hintin { from { opacity: 0; transform: translateY(4px); } }
   .hint:hover { color: var(--amber-hi); }
   .hint:active { transform: scale(.96); }
@@ -1124,41 +1221,51 @@
   .hint::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 14px);
     left: 50%; transform: translateX(-50%) translateY(3px); white-space: nowrap;
     padding: 6px 11px; background: rgba(17,13,7,.95); border: 1px solid rgba(255,176,0,.35);
-    border-radius: 8px; font: 400 10.5px/1.3 ${SANS}; color: #ffe2b0; opacity: 0;
+    border-radius: 8px; font: 400 10px/1.3 ${SANS}; color: #ffe2b0; opacity: 0;
     pointer-events: none; box-shadow: 0 8px 26px rgba(0,0,0,.45);
-    transition: opacity .15s ease .3s, transform .18s var(--eo) .3s; }
+    transition: opacity var(--d1) ease .3s, transform var(--d2) var(--eo) .3s; }
   .hint:hover::after { opacity: 1; transform: translateX(-50%) translateY(0); }
   .hint kbd { font: 500 10px/1 ${SANS}; color: rgba(255,222,150,.9);
     border: 1px solid rgba(255,176,0,.32); border-bottom-width: 2px; border-radius: 4px;
     padding: 3px 5px; background: rgba(255,176,0,.07);
-    transition: color .15s ease, border-color .15s ease, background .15s ease,
-      transform .12s var(--eo), box-shadow .15s ease; }
+    transition: color var(--d1) ease, border-color var(--d1) ease, background var(--d1) ease,
+      transform var(--d1) var(--eo), box-shadow var(--d1) ease; }
   .hint:hover kbd { border-color: rgba(255,176,0,.6); }
   .hint kbd.hit { transform: translateY(1px) scale(.92); background: rgba(255,176,0,.28);
     color: #fff3da; border-color: rgba(255,201,77,.8); box-shadow: 0 0 12px rgba(255,176,0,.45); }
 
   .rec { position: fixed; right: 28px; top: 24px; display: none; align-items: center; gap: 10px;
     background: rgba(17,13,7,.85); border: 1px solid rgba(255,176,0,.35); border-radius: 999px;
-    padding: 8px 16px; font: 400 12.5px ${SANS}; color: #ffe2b0; pointer-events: none; }
-  .rec.in { display: flex; animation: recin .24s var(--eo5); }
+    padding: 8px 16px; font: 400 13px ${SANS}; color: #ffe2b0; pointer-events: none; }
+  .rec.in { display: flex; animation: recin var(--d2) var(--eo5); }
   @keyframes recin { from { opacity: 0; transform: translateY(-8px); } }
   .rec .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--amber);
     box-shadow: 0 0 10px rgba(255,176,0,.9); animation: pulse 1s ease infinite; }
   @keyframes pulse { 50% { opacity: .25; } }
 
+  /* a quiet word beside the cursor when it rests on something that moves —
+     the studies (echo, score, trail) introduce themselves where they apply */
+  .whisper { position: fixed; pointer-events: none; opacity: 0; transform: translateY(3px);
+    padding: 5px 11px; background: rgba(17,13,7,.88); border: 1px solid rgba(255,176,0,.28);
+    border-radius: 999px; font: 400 10px/1 ${SANS}; color: rgba(255,226,176,.85);
+    white-space: nowrap; letter-spacing: .03em;
+    transition: opacity var(--d2) ease, transform var(--d2) var(--eo); }
+  .whisper.show { opacity: 1; transform: translateY(0); }
+
   /* the stage clears completely for capture */
   :host(.shooting) .vignette, :host(.shooting) .capsule, :host(.shooting) .ribbon,
-  :host(.shooting) .toast, :host(.shooting) .stage { display: none !important; }
+  :host(.shooting) .toast, :host(.shooting) .stage, :host(.shooting) .whisper
+    { display: none !important; }
 
   @media (prefers-reduced-motion: reduce) {
-    .capsule, .hint, .rec.in, .glyph.held, .rings, .grain,
-    .toast.show .sweep, .toast.show .after { animation: none; }
+    .capsule, .hint, .rec.in, .glyph.held, .toast.show .sweep { animation: none; }
     .vignette, .stage, .rim, .toast, .ribbon, .ribbon .ph, .bubble,
-    .capsule, .glyph, .hint, .hint kbd { transition: none; }
+    .capsule, .glyph, .hint, .hint kbd, .whisper { transition: none; }
   }
 </style>
 <div class="vignette" id="vig"></div>
-<div class="stage" id="stage"><div class="beam"></div><div class="floor"></div>
+<div class="stage" id="stage"><div class="noise"></div><div class="beam"></div>
+  <div class="ground" id="ground"></div><div class="floor"></div>
   <div class="rim l" id="rimL"></div><div class="rim r" id="rimR"></div></div>
 <div class="toast" id="toast">
   <div class="slab">
@@ -1168,17 +1275,14 @@
     <div class="pool">
       <div class="scrim"></div>
       <div class="tintwash"></div>
-      <div class="rings r1"></div>
-      <div class="rings r2"></div>
-      <div class="grain"></div>
       <div class="sweep"></div>
-      <div class="after"></div>
     </div>
   </div>
   <div class="word" id="tword"></div><div class="plain" id="tplain"></div>
 </div>
 <div class="ribbon" id="ribbon">
-  <span class="empty">nothing seekable here — → still steps the clock</span>
+  <span class="empty">nothing has moved yet — → still steps the clock</span>
+  <canvas class="wave" id="wave"></canvas>
   <div class="rail"><div class="band" id="band"></div><div class="fill" id="rfill"></div></div>
   <div class="tick t0"></div><div class="tick t1"></div>
   <div class="mark a" id="ma"></div><div class="mark b" id="mb"></div>
@@ -1199,12 +1303,13 @@
   <span class="sep"></span>
   <span class="hints" id="hints"></span>
 </div>
-<div class="rec" id="recpill"><span class="dot"></span><span id="rectext">recording</span></div>`;
+<div class="rec" id="recpill"><span class="dot"></span><span id="rectext">recording</span></div>
+<div class="whisper" id="whisper"></div>`;
 
     ui = {};
-    for (const id of ['vig','stage','rimL','rimR','toast','tword','tplain','ribbon','band',
-                      'rfill','ma','mb','ph','bubble','rdur','capsule','glyph',
-                      'tempo','word','plain','time','hints','recpill','rectext'])
+    for (const id of ['vig','stage','ground','rimL','rimR','toast','tword','tplain','ribbon','band',
+                      'rfill','ma','mb','ph','bubble','rdur','capsule','glyph','wave',
+                      'tempo','word','plain','time','hints','recpill','rectext','whisper'])
       ui[id] = root.getElementById(id);
 
     requestAnimationFrame(() => ui.vig && ui.vig.classList.add('in'));
@@ -1215,7 +1320,7 @@
     let rdrag = false;
     const rfrac = (e) => {
       const r = ui.ribbon.getBoundingClientRect();
-      return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      return detent((e.clientX - r.left) / r.width);
     };
     ui.ribbon.addEventListener('pointerdown', (e) => {
       stopLoop();
@@ -1247,26 +1352,35 @@
     record: 'stop-motion capture into a storyboard, frame-perfect',
     link: 'copy a link to this held moment for a teammate',
     leave: 'restore the page exactly as it was',
+    more: 'the studies — echo, score, trail, and the link',
+    less: 'tuck the studies away',
   };
 
+  // The capsule shows the few moves you always need; the studies (echo,
+  // score, trail, link) stay one ··· away — and introduce themselves beside
+  // the cursor whenever it rests on something that moves. Keys always work,
+  // shown or not.
+  let moreHints = false;
   function renderHints() {
     const items = st.frozen
-      ? [['space', 'release'], ['←→', 'step'], ['L', 'loop'], ['E', 'echo'],
-         ['S', 'score'], ['T', 'trail'], ['R', 'record'], ['K', 'link'], ['esc', 'leave']]
-      : [['space', 'freeze'], ['↑↓', 'speed'], ['←', 'rewind'], ['S', 'score'],
-         ['T', 'trail'], ['R', 'record'], ['esc', 'leave']];
+      ? [['space', 'release'], ['←→', 'step'], ['L', 'loop'], ['R', 'record']]
+      : [['space', 'freeze'], ['↑↓', 'speed'], ['R', 'record']];
+    if (moreHints)
+      items.push(['E', 'echo'], ['S', 'score'], ['T', 'trail'], ['K', 'link']);
+    items.push(['···', moreHints ? 'less' : 'more'], ['esc', 'leave']);
     ui.hints.innerHTML = '';
     items.forEach(([k, label], i) => {
       const b = document.createElement('button');
       b.className = 'hint';
       b.style.animationDelay = `${i * 25}ms`;
       b.setAttribute('data-tip', HINT_TIPS[label] || label);
-      b.innerHTML = `<kbd data-k="${k}">${k}</kbd>${label}`;
+      b.innerHTML = label === 'more' || label === 'less'
+        ? `<kbd data-k="${k}">${k}</kbd>`
+        : `<kbd data-k="${k}">${k}</kbd>${label}`;
       b.addEventListener('click', () => {
         if (label === 'freeze' || label === 'release') setFrozen(!st.frozen);
         else if (label === 'step') step(16.67);
         else if (label === 'speed') setTempo(tempoIndex() - 1);
-        else if (label === 'rewind') { setFrozen(true); }
         else if (label === 'loop') toggleLoop();
         else if (label === 'echo') st.echo ? send('echoOff') : send('echo', { x: mouse.x, y: mouse.y });
         else if (label === 'score') scoreToggle();
@@ -1274,9 +1388,19 @@
         else if (label === 'link') copyLink();
         else if (label === 'record') record(0);
         else if (label === 'leave') leave();
+        else if (label === 'more' || label === 'less') { moreHints = !moreHints; renderHints(); }
       });
       ui.hints.appendChild(b);
     });
+    // fade-through, never a blink: the row arrives as one soft beat while
+    // the items stagger in underneath it
+    if (!REDUCE.matches) {
+      try {
+        ui.hints.animate(
+          [{ opacity: 0, filter: 'blur(2px)' }, { opacity: 1, filter: 'blur(0)' }],
+          { duration: 160, easing: EASE.out });
+      } catch (_) {}
+    }
   }
 
   // Plain toasts are for actions you repeat (tempo, marks, freezes) — quiet
@@ -1333,13 +1457,45 @@
     badge();
   }
 
+  // the seismograph: ask the engine for the window's activity terrain
+  // whenever the window itself has changed shape
+  let profEnd = -1;
+  function drawWave(peaks) {
+    if (!ui.wave || !peaks || !peaks.length) return;
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const w = ui.ribbon.clientWidth || 1, h = 36;
+    const cw = Math.round(w * dpr), ch = Math.round(h * dpr);
+    // writing width/height clears the canvas and forces a relayout — only
+    // touch it when the ribbon actually resized
+    if (ui.wave.width !== cw) ui.wave.width = cw;
+    if (ui.wave.height !== ch) ui.wave.height = ch;
+    const g = ui.wave.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const base = 19, A = 13, last = peaks.length - 1 || 1;
+    const pts = peaks.map((v, i) => [i / last * w, base - v * A]);
+    g.beginPath();
+    g.moveTo(0, base);
+    for (const [x, y] of pts) g.lineTo(x, y);
+    g.lineTo(w, base);
+    g.closePath();
+    g.fillStyle = 'rgba(255,176,0,.13)';
+    g.fill();
+    g.beginPath();
+    pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y));
+    g.strokeStyle = 'rgba(255,201,77,.38)';
+    g.lineWidth = 1;
+    g.stroke();
+  }
+
   function renderRibbon() {
     if (!host) return;
     const show = active && st.frozen && !recording;
     ui.ribbon.classList.toggle('in', show);
     const has = tl.endMs > 0;
     ui.ribbon.classList.toggle('bare', !has);
-    if (!show || !has) return;
+    if (!show || !has) { profEnd = -1; return; }
+    if (Math.abs(tl.endMs - profEnd) > 300) { profEnd = tl.endMs; send('profile', 72); }
     const f = Math.max(0, Math.min(1, tl.t / tl.endMs));
     ui.ph.style.left = (f * 100) + '%';
     ui.rfill.style.width = (f * 100) + '%';

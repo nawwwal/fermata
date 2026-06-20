@@ -1,0 +1,130 @@
+name: Release CRX
+
+# Builds a signed CRX3 for every version tag (e.g. `v0.4.0`) and attaches it
+# to a GitHub Release. If Chrome Web Store API secrets are configured, it also
+# publishes that same CRX to the store (the API and dashboard both accept CRX).
+#
+# Cut a release with:
+#   git tag v0.4.0 && git push origin v0.4.0
+# The tag's version must match manifest.json.
+#
+# Required secret (always):
+#   CRX_PRIVATE_KEY    the PKCS#8 RSA private key PEM that signs the CRX.
+#                      Keep it identical forever — it fixes the extension ID.
+#
+# Optional secrets (only to auto-publish to the Web Store):
+#   CWS_EXTENSION_ID   the store's extension ID (from the dev dashboard)
+#   CWS_CLIENT_ID      Google OAuth client id
+#   CWS_CLIENT_SECRET  Google OAuth client secret
+#   CWS_REFRESH_TOKEN  OAuth refresh token with webstore scope
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:        # manual build; produces a CRX artifact, no release
+
+permissions:
+  contents: write
+
+jobs:
+  crx:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read manifest version, check it matches the tag
+        id: meta
+        run: |
+          version="$(node -p "require('./manifest.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$version" ]; then
+              echo "::error::tag v$tag does not match manifest version $version"
+              exit 1
+            fi
+          fi
+
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+
+      - name: Restore signing key
+        env:
+          CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
+        run: |
+          if [ -z "$CRX_PRIVATE_KEY" ]; then
+            echo "::error::secret CRX_PRIVATE_KEY is not set"
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$CRX_PRIVATE_KEY" > key.pem
+
+      - name: Pack CRX
+        env:
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: ./scripts/pack-crx.sh
+
+      - name: Verify CRX3 magic
+        run: |
+          test "$(head -c 4 dist/fermata.crx)" = "Cr24" || { echo "not a CRX3"; exit 1; }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fermata-${{ steps.meta.outputs.version }}-crx
+          path: dist/fermata-*.crx
+
+      - name: Attach CRX to the GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/fermata-${{ steps.meta.outputs.version }}.crx" \
+            --title "Fermata ${{ steps.meta.outputs.version }}" \
+            --generate-notes \
+          || gh release upload "$GITHUB_REF_NAME" \
+            "dist/fermata-${{ steps.meta.outputs.version }}.crx" --clobber
+
+  publish-store:
+    needs: crx
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    env:
+      CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+      CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+      CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+      CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+    steps:
+      - name: Gate on store credentials
+        id: gate
+        run: |
+          if [ -n "$CWS_EXTENSION_ID" ] && [ -n "$CWS_CLIENT_ID" ] \
+             && [ -n "$CWS_CLIENT_SECRET" ] && [ -n "$CWS_REFRESH_TOKEN" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Web Store secrets not configured — skipping store publish."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download the signed CRX from the build job
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: fermata-${{ needs.crx.outputs.version }}-crx
+          path: dist
+
+      - name: Upload & publish the CRX to the Chrome Web Store
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          npx --yes chrome-webstore-upload-cli@3 upload \
+            --source "dist/fermata-${{ needs.crx.outputs.version }}.crx" \
+            --extension-id "$CWS_EXTENSION_ID" \
+            --client-id "$CWS_CLIENT_ID" \
+            --client-secret "$CWS_CLIENT_SECRET" \
+            --refresh-token "$CWS_REFRESH_TOKEN" \
+            --auto-publish

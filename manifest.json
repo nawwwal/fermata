@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fermata",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Freeze a page's clock and the live DOM tilts into 3D. Slow, step, scrub, echo, and record motion frame-perfect.",
   "permissions": ["storage", "unlimitedStorage", "activeTab"],
   "host_permissions": ["<all_urls>"],
