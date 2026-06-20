@@ -11,7 +11,12 @@ Until then, [README.md](./README.md) describes capabilities and honest limits.
 
 - Product and design context: this file
 - Capability reference and limits: [README.md](./README.md)
-- Implementation: flat Chrome extension files at repo root (no build step)
+- Implementation: unpacked MV3 extension — `manifest.json` plus `src/`,
+  `pages/`, `icons/` (no build step)
+- Shipping: the `/release` skill at
+  [`.agents/skills/release/SKILL.md`](./.agents/skills/release/SKILL.md) drives
+  versioning, tagging, and publishing; CI lives in
+  [`.github/workflows/release.yml`](./.github/workflows/release.yml)
 
 ## Agent context files
 
@@ -110,6 +115,35 @@ the governor will freeze Fermata itself.
 Echoes: deep clones of a moving element placed inside `body` (so they tilt with
 the page), each replaying the original effect's keyframes via WAAPI, parked at
 staggered `currentTime`s, fanned through `translateZ`.
+
+## Working in this repo
+
+**Dev loop.** There is no build. Edit the files, then in `chrome://extensions`
+(Developer mode) **reload the unpacked extension** and **reload the test tab**
+— the engine injects at `document_start`, so a stale tab won't have the new
+`page.js`. `⌥⇧F` toggles Fermata.
+
+**Layout.** `manifest.json` at the root; `src/` (engine, content, worker),
+`pages/` (storyboard), `icons/`. `.claude` is a symlink to `.agents`, so
+project skills live at `.agents/skills/<name>/SKILL.md` and agent docs at
+`.agents/`. `key.pem` and `dist/` are gitignored and must stay that way.
+
+**Verifying a change.** There is no automated test harness, so:
+
+1. `node --check` every touched `.js`; `JSON.parse` the manifest.
+2. For anything behavioral (clock, freeze, ledger, governor, recorder), do the
+   manual checklist under *Definition of done* against a reloaded unpacked
+   extension — or drive it with the Playwright skill loading the unpacked
+   extension. Inspection + syntax-check alone is not "verified" for engine work.
+3. If `key.pem` is present, `./scripts/pack-crx.sh` proves the package still
+   builds (it asserts the CRX3 magic).
+
+**Git conventions.** Work on `main`; commit and push **only when asked**. End
+commit messages with the `Co-Authored-By: Claude …` trailer. Use `gh` for
+GitHub. Never commit `key.pem`, `*.pem`, `dist/`, or `.env*`.
+
+**Reviewing changes.** `/code-review` for correctness bugs, `/simplify` for
+quality-only cleanups. Both read the current diff.
 
 ## UX principles
 
@@ -221,6 +255,37 @@ Manual verification checklist:
 4. Point at something moving, `E` — echoes fan into depth; drag to scrub
 5. `R` — storyboard opens with clean frames; flipbook plays; exports download
 
+## Building, packaging & releasing
+
+**Two identities, on purpose.** The published Chrome Web Store item
+(`faajhieeadooipnoijnecgeepfgcimho`) is signed by Google server-side — its key
+differs from the repo's `key.pem` (which yields `kfcpcnbhhiafbbebflpgmngnficnpnem`).
+So:
+
+- **Store** uploads an unsigned **ZIP** (key-agnostic; the store re-signs).
+- **GitHub Release** ships a **CRX signed by `key.pem`** for direct/sideload
+  installs only.
+
+Never "simplify" the store job to upload the local CRX — it would be rejected
+for a key mismatch.
+
+**Pipeline.** `scripts/pack-crx.sh` builds + signs the CRX locally and in CI
+(staging only the shipped files, never the key). `.github/workflows/release.yml`
+fires on a `vX.Y.Z` tag whose number matches `manifest.json`: it builds the CRX,
+attaches it to a GitHub Release, then zips and auto-publishes to the store.
+
+**Cutting a release.** Use the `/release` skill — don't hand-roll it. It does
+README hygiene, the version bump, tag, push, CI watch, curated release notes,
+and artifact verification, with the guardrails baked in.
+
+**Secrets** (already set on the GitHub repo): `CRX_PRIVATE_KEY` (the PKCS#8
+signing key — reuse forever to keep the CRX id stable) plus `CWS_EXTENSION_ID`,
+`CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN` (Web Store API, OAuth
+client in Google Cloud project `seriph`). To re-mint the refresh token:
+`gcloud auth application-default login --client-id-file=<desktop client json>
+--scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/chromewebstore`
+(the Homebrew gcloud wrapper needs `CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.14`).
+
 ## Guardrails
 
 - Do not add reverse playback for imperative JS motion in the live page
@@ -234,6 +299,12 @@ Manual verification checklist:
   exists.
 - Do not introduce a build pipeline for convenience unless the user asks —
   keep "Load unpacked" as the primary dev loop.
+- Do not commit `key.pem`/`*.pem`, `dist/`, or `.env*`; the CRX id depends on
+  `key.pem` staying secret and unchanged.
+- Do not change the store-publish path to upload the signed CRX — it must stay a
+  ZIP (the store owns that item's key).
+- Do not reuse or downgrade a version; the tag must match `manifest.json` and
+  exceed the published store version.
 
 ## How agents should use Plane
 
